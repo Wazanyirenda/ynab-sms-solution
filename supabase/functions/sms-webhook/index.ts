@@ -138,6 +138,7 @@ interface YnabResult {
   account?: string;
   category?: string;
   payee?: string;
+  memo?: string;
   amount?: number;
   direction?: string;
   transaction_ids?: string[];
@@ -298,12 +299,17 @@ async function processWithYnab(params: {
   // Build the YNAB transaction.
   // ─────────────────────────────────────────────────────────────────────────
   const sign = getSign(aiParsed.direction);
+  
+  // Use AI-generated memo if available, otherwise fall back to raw SMS
+  // AI memo is cleaner (e.g., "Received from Harry Banda via Zamtel")
+  const memo = aiParsed.memo ?? text.slice(0, 200);
+  
   const transaction = {
     account_id: routing.accountId,
     date: receivedAtIso.slice(0, 10),
     amount: amountMilli * sign,
     payee_name: aiParsed.payee ?? undefined, // AI-extracted payee
-    memo: text, // Keep full SMS for context
+    memo, // Clean AI-generated memo
     cleared: "cleared" as const,
     approved: false, // Keep manual approval for safety
     import_id: importId,
@@ -320,6 +326,7 @@ async function processWithYnab(params: {
       account: routing.accountName,
       category: aiParsed.category_hint ?? undefined,
       payee: aiParsed.payee ?? undefined,
+      memo, // AI-generated clean memo
       amount: aiParsed.amount,
       direction: aiParsed.direction,
       transaction_ids: res.data.transaction_ids,

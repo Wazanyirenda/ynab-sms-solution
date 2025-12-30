@@ -40,6 +40,9 @@ export interface GeminiParsedSms {
 
     // Suggested category based on message content (e.g., "Airtime", "Groceries")
     category_hint: string | null;
+
+    // Clean, human-friendly memo for YNAB (e.g., "Received from Harry Banda via Zamtel")
+    memo: string | null;
 }
 
 /**
@@ -100,6 +103,16 @@ IMPORTANT RULES:
   - "Cash Withdrawal" for ATM/agent withdrawals
   - "Bank Fees" for transaction fees
   - null if unclear
+- For memo: Write a detailed but organized memo (max 200 chars).
+  Format: "[Action] [Payee/Details] | Ref: [ID] | Bal: [Balance]"
+  Include transaction/reference IDs and remaining balance if present.
+  Examples:
+  - "Received from Harry Banda via Zamtel | Ref: 001271716055 | Bal: ZMW 23.98"
+  - "Sent to John Doe | TID: PP251230.1234.A12345 | Bal: ZMW 500.00"
+  - "Airtime top-up | Txn: RC251230.1234.H12345 | Bal: ZMW 100.00"
+  - "POS purchase at Shoprite | Bal: ZMW 1,234.56"
+  - "ATM withdrawal | Ref: 123456789"
+  Do NOT include promotional text or marketing messages.
 
 Respond with ONLY valid JSON, no markdown or explanation:`;
 
@@ -121,7 +134,8 @@ Respond with JSON:
   "amount": number or null,
   "direction": "inflow" or "outflow" or null,
   "payee": "name" or null,
-  "category_hint": "category" or null
+  "category_hint": "category" or null,
+  "memo": "clean description" or null
 }`;
 }
 

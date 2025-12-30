@@ -274,8 +274,21 @@ When an SMS arrives, it's sent to Gemini with a prompt that asks:
 3. **What direction?** (inflow = received, outflow = sent/paid)
 4. **Who's the payee?** (extracted from message if mentioned)
 5. **What category?** (Airtime, Groceries, Transfer, etc.)
+6. **Write a clean memo** (human-friendly description for YNAB)
 
 The AI returns structured JSON that we use to create the YNAB transaction.
+
+### AI-generated memos
+
+Instead of dumping the raw SMS into YNAB, the AI writes detailed but organized memos:
+
+| Raw SMS | AI Memo |
+|---------|---------|
+| "ZMW 5.00 received from Harry Banda NFS on 30/12/2025 at 11:42 AM. New ZamPay balance is ZMW 23.98. 001271716055 completed. Buy Airtime..." | "Received from Harry Banda via Zamtel \| Ref: 001271716055 \| Bal: ZMW 23.98" |
+| "Your ZMW 10.00 airtime top-up is successful. Your new Airtel Money balance is ZMW 100.00. Txn ID: RC251230..." | "Airtime top-up \| Txn: RC251230... \| Bal: ZMW 100.00" |
+| "Money sent to John Doe on 123456789. Amount ZMW 50.00. Your bal is ZMW 500.00. TID: PP251230..." | "Sent to John Doe \| TID: PP251230... \| Bal: ZMW 500.00" |
+
+Key details (ref numbers, balances) are preserved, but promo text is stripped out.
 
 ### Example AI responses
 
