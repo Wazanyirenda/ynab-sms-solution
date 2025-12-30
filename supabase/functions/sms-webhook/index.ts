@@ -4,18 +4,18 @@
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Receives SMS data from iOS Shortcuts and creates transactions in YNAB.
+ * Uses Google Gemini AI to intelligently parse SMS messages.
  *
  * Endpoint: POST /functions/v1/sms-webhook
  *
  * Flow:
  * 1. Validate webhook secret (if configured)
  * 2. Parse the incoming SMS payload
- * 3. Fetch YNAB accounts/categories (cached for performance)
- * 4. Extract transaction data (amount, direction, account, category)
+ * 3. Send SMS to Gemini AI for intelligent parsing
+ * 4. Route to correct YNAB account based on sender
  * 5. Create the transaction in YNAB
  *
  * Configuration: supabase/functions/_shared/config.ts
- * (Uses account/category NAMES — no more hardcoded UUIDs!)
  */
 
 // Edge runtime types so Deno understands the Supabase environment.
@@ -23,13 +23,15 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 // Shared modules.
 import { createYnabClient } from "../_shared/ynab.ts";
-import { ensureCache } from "../_shared/ynab-lookup.ts";
-import {
-  makeImportId,
-  normalizeDate,
-  parseSmsContext,
-} from "../_shared/parsers.ts";
+import { ensureCache, getCategoryIdByName } from "../_shared/ynab-lookup.ts";
+import { makeImportId, normalizeDate } from "../_shared/parsers.ts";
 import { resolveAccountId } from "../_shared/routing.ts";
+import {
+  GeminiParsedSms,
+  getSign,
+  parseWithGemini,
+  toMilliunits,
+} from "../_shared/gemini.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT VARIABLES
@@ -40,9 +42,13 @@ import { resolveAccountId } from "../_shared/routing.ts";
 const ynabToken = Deno.env.get("YNAB_TOKEN");
 const ynabBudgetId = Deno.env.get("YNAB_BUDGET_ID");
 const webhookSecret = Deno.env.get("WEBHOOK_SECRET");
+const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
 
 // YNAB integration is only enabled if both token and budget ID are set.
 const ynabEnabled = Boolean(ynabToken && ynabBudgetId);
+
+// Gemini AI is required for SMS parsing.
+const geminiEnabled = Boolean(geminiApiKey);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAYLOAD TYPES
@@ -101,6 +107,7 @@ Deno.serve(async (req) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // STEP 5: Log and return response.
+  // Include AI output in logs for debugging!
   // ─────────────────────────────────────────────────────────────────────────
   console.log("SMS WEBHOOK:", {
     source,
@@ -130,12 +137,19 @@ interface YnabResult {
   detail?: string;
   account?: string;
   category?: string;
+  payee?: string;
+  amount?: number;
+  direction?: string;
   transaction_ids?: string[];
   duplicate_import_ids?: string[];
+  // AI parsing output for debugging
+  ai_parsed?: GeminiParsedSms;
+  ai_raw?: string;
 }
 
 /**
  * Processes an SMS and creates a transaction in YNAB.
+ * Uses Gemini AI for intelligent SMS parsing.
  *
  * @param params - SMS context (text, sender, timestamp)
  * @returns Result indicating success or failure with reason
@@ -147,16 +161,78 @@ async function processWithYnab(params: {
 }): Promise<YnabResult> {
   const { text, sender, receivedAtIso } = params;
 
-  // Double-check env vars (should already be true if we got here).
+  // ─────────────────────────────────────────────────────────────────────────
+  // Check required environment variables.
+  // ─────────────────────────────────────────────────────────────────────────
   if (!ynabToken || !ynabBudgetId) {
     return { sent: false, reason: "YNAB env missing" };
   }
 
-  // Create YNAB client.
+  if (!geminiEnabled || !geminiApiKey) {
+    return { sent: false, reason: "GEMINI_API_KEY not configured" };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Call Gemini AI to parse the SMS.
+  // ─────────────────────────────────────────────────────────────────────────
+  const geminiResult = await parseWithGemini(text, geminiApiKey);
+
+  // If Gemini failed, log the error and skip this message.
+  if (!geminiResult.success || !geminiResult.parsed) {
+    console.error("Gemini parsing failed:", geminiResult.error);
+    return {
+      sent: false,
+      reason: "AI parsing failed",
+      detail: geminiResult.error,
+      ai_raw: geminiResult.raw_response,
+    };
+  }
+
+  const aiParsed = geminiResult.parsed;
+
+  // Log the AI output for debugging.
+  console.log("AI PARSED:", aiParsed);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Check if this is actually a transaction.
+  // The AI decides based on context, not just regex patterns!
+  // ─────────────────────────────────────────────────────────────────────────
+  if (!aiParsed.is_transaction) {
+    return {
+      sent: false,
+      reason: "Not a transaction",
+      detail: aiParsed.reason,
+      ai_parsed: aiParsed,
+      ai_raw: geminiResult.raw_response,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Validate we have the required transaction data.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (aiParsed.amount === null || aiParsed.amount === undefined) {
+    return {
+      sent: false,
+      reason: "AI could not extract amount",
+      ai_parsed: aiParsed,
+      ai_raw: geminiResult.raw_response,
+    };
+  }
+
+  if (!aiParsed.direction) {
+    return {
+      sent: false,
+      reason: "AI could not determine direction",
+      ai_parsed: aiParsed,
+      ai_raw: geminiResult.raw_response,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Initialize YNAB client and cache.
+  // ─────────────────────────────────────────────────────────────────────────
   const client = createYnabClient({ token: ynabToken, budgetId: ynabBudgetId });
 
-  // Ensure we have fresh account/category data from YNAB.
-  // This is cached, so subsequent requests in the same instance are fast.
   try {
     await ensureCache(client, ynabBudgetId);
   } catch (err) {
@@ -165,68 +241,100 @@ async function processWithYnab(params: {
       sent: false,
       reason: "Failed to fetch YNAB accounts/categories",
       detail: String(err),
+      ai_parsed: aiParsed,
     };
   }
 
-  // Parse the SMS to extract transaction data.
-  const smsContext = parseSmsContext(text);
-
-  // Skip balance-only notifications.
-  if (smsContext.isBalanceOnly) {
-    return { sent: false, reason: "Balance-only message" };
-  }
-
-  // Skip spam/ad messages (betting promos, ads with currency amounts, etc.).
-  if (smsContext.isSpam) {
-    return { sent: false, reason: "Spam/ad message filtered" };
-  }
-
-  // Skip if we couldn't parse amount/direction.
-  if (!smsContext.parsed) {
-    return { sent: false, reason: "Could not parse amount/direction" };
-  }
-
-  // Generate a deterministic import ID for deduplication.
-  const importId = await makeImportId({
-    sender,
-    date: receivedAtIso.slice(0, 10),
-    amountMilli: smsContext.parsed.amountMilli,
-    text,
-  });
-
-  // Resolve the YNAB account to use.
+  // ─────────────────────────────────────────────────────────────────────────
+  // Resolve the YNAB account based on sender/message content.
+  // This still uses our deterministic routing logic.
+  // ─────────────────────────────────────────────────────────────────────────
   const routing = await resolveAccountId(text, sender, client, ynabBudgetId);
 
   if (!routing.accountId) {
-    return { sent: false, reason: "No account resolved or creatable" };
+    return {
+      sent: false,
+      reason: "No account resolved or creatable",
+      ai_parsed: aiParsed,
+    };
   }
 
-  // Build the transaction object.
+  // ─────────────────────────────────────────────────────────────────────────
+  // Look up category ID if AI suggested a category.
+  // ─────────────────────────────────────────────────────────────────────────
+  let categoryId: string | undefined;
+  if (aiParsed.category_hint) {
+    categoryId = getCategoryIdByName(aiParsed.category_hint);
+    // If the exact name doesn't match, try some common mappings
+    if (!categoryId) {
+      // Try with emoji prefix for common categories
+      const categoryMappings: Record<string, string> = {
+        "Airtime": "🛜 Data / Airtime",
+        "Data": "🛜 Data / Airtime",
+        "Transfer": "Transfer",
+        "Groceries": "🛒 Groceries",
+        "Utilities": "🏠 Utilities",
+        "Cash Withdrawal": "💵 Cash",
+      };
+      const mappedName = categoryMappings[aiParsed.category_hint];
+      if (mappedName) {
+        categoryId = getCategoryIdByName(mappedName);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Generate import ID for deduplication.
+  // ─────────────────────────────────────────────────────────────────────────
+  const amountMilli = toMilliunits(aiParsed.amount);
+  const importId = await makeImportId({
+    sender,
+    date: receivedAtIso.slice(0, 10),
+    amountMilli,
+    text,
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Build the YNAB transaction.
+  // ─────────────────────────────────────────────────────────────────────────
+  const sign = getSign(aiParsed.direction);
   const transaction = {
     account_id: routing.accountId,
     date: receivedAtIso.slice(0, 10),
-    amount: smsContext.parsed.amountMilli * smsContext.parsed.sign,
-    payee_name: smsContext.payeeName, // Only set for airtime; undefined otherwise
+    amount: amountMilli * sign,
+    payee_name: aiParsed.payee ?? undefined, // AI-extracted payee
     memo: text, // Keep full SMS for context
     cleared: "cleared" as const,
     approved: false, // Keep manual approval for safety
     import_id: importId,
-    ...(smsContext.categoryId ? { category_id: smsContext.categoryId } : {}),
+    ...(categoryId ? { category_id: categoryId } : {}),
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
   // Send to YNAB.
+  // ─────────────────────────────────────────────────────────────────────────
   try {
     const res = await client.createTransaction(transaction);
     return {
       sent: true,
       account: routing.accountName,
-      category: smsContext.categoryName,
+      category: aiParsed.category_hint ?? undefined,
+      payee: aiParsed.payee ?? undefined,
+      amount: aiParsed.amount,
+      direction: aiParsed.direction,
       transaction_ids: res.data.transaction_ids,
       duplicate_import_ids: res.data.duplicate_import_ids,
+      ai_parsed: aiParsed,
+      ai_raw: geminiResult.raw_response,
     };
   } catch (err) {
     console.error("YNAB error:", err);
-    return { sent: false, reason: "YNAB error", detail: String(err) };
+    return {
+      sent: false,
+      reason: "YNAB error",
+      detail: String(err),
+      ai_parsed: aiParsed,
+    };
   }
 }
 

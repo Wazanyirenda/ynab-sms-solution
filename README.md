@@ -1,25 +1,42 @@
-# YNAB SMS Ingestion (Supabase Edge)
+# YNAB SMS Ingestion (Supabase Edge + Gemini AI)
 
 Automatically captures transaction SMS messages from Zambian banks and mobile money services, then imports them into YNAB (You Need A Budget).
+
+**Powered by Google Gemini AI** for intelligent SMS parsing — no brittle regex rules!
 
 ## How it works
 
 1. **iOS Shortcut** triggers when you receive an SMS containing `ZMW`.
 2. The Shortcut sends the SMS to your **Supabase Edge Function**.
-3. The Edge Function **parses** the SMS, extracts transaction data, and **posts to YNAB**.
-4. YNAB shows the transaction for your review and categorization.
+3. **Gemini AI** analyzes the message to determine if it's a real transaction.
+4. If it is, the function extracts amount, direction, payee, and category.
+5. The transaction is **posted to YNAB** for your review.
+
+## Why AI?
+
+Traditional regex-based parsing has problems:
+
+- ❌ Too strict → misses valid transactions with unusual formats
+- ❌ Too loose → imports spam/promos that mention amounts ("WIN ZMW 5,000!")
+- ❌ Breaks when banks change message formats
+
+Gemini AI understands **context**:
+
+- ✅ Knows "WIN ZMW 5,000!" is a promo, not a transaction
+- ✅ Handles casual mentions of money in conversations
+- ✅ Adapts to new message formats automatically
+- ✅ Extracts payee names and suggests categories
 
 ## Features
 
-- ✅ Automatic amount extraction (e.g., "ZMW 100.00")
-- ✅ Smart direction detection (inflow vs outflow based on keywords)
-- ✅ Multi-account routing based on SMS sender
-- ✅ Account-ending hints (e.g., "ending 1234" → routes to specific account)
-- ✅ Airtime auto-categorization and payee assignment
-- ✅ Deduplication via deterministic import IDs
-- ✅ Balance-only message filtering
-- ✅ Spam/ad message filtering (betting promos, ads with currency amounts, etc.)
-- ✅ Manual approval for safety
+- 🤖 **AI-powered parsing** — Gemini understands context, not just patterns
+- 💰 **Smart amount extraction** — Gets transaction amount, not balance
+- ↔️ **Direction detection** — Knows inflow vs outflow from context
+- 👤 **Payee extraction** — Pulls names from messages automatically
+- 🏷️ **Category suggestions** — AI suggests categories (Airtime, Groceries, etc.)
+- 🏦 **Multi-account routing** — Routes by SMS sender or account ending
+- 🔄 **Deduplication** — Same SMS won't create duplicate transactions
+- ✋ **Manual approval** — Transactions need your approval in YNAB
 
 ## Supported banks/services
 
@@ -31,7 +48,7 @@ Out of the box, this project supports:
 - **ABSA Bank** (sender: `Absa`, `ABSA_ZM`)
 - **Standard Chartered** (sender: `StanChart`, `StanChartZM`)
 
-You can easily add more by editing `config.ts`.
+Add more by editing `config.ts`.
 
 ## Repository layout
 
@@ -42,11 +59,12 @@ supabase/
 │   │   ├── index.ts          # Main webhook handler
 │   │   └── deno.json         # Deno config
 │   └── _shared/
-│       ├── config.ts         # ⚙️ Sender/category mappings (edit this!)
-│       ├── parsers.ts        # SMS parsing logic
+│       ├── gemini.ts         # 🤖 Gemini AI client (SMS parsing)
+│       ├── config.ts         # ⚙️ Sender→account mappings (edit this!)
+│       ├── parsers.ts        # Utility functions (date, import ID)
 │       ├── routing.ts        # Account routing logic
 │       ├── ynab.ts           # YNAB API client
-│       └── ynab-lookup.ts    # Name→ID resolution (automatic!)
+│       └── ynab-lookup.ts    # Name→ID resolution
 └── config.toml               # Supabase project config
 ```
 
@@ -65,8 +83,9 @@ cd ynab-sms-solution
 2. Install the [Supabase CLI](https://supabase.com/docs/guides/cli)
 3. Link your project: `supabase link --project-ref <your-project-ref>`
 
-### 3. Get your YNAB credentials
+### 3. Get your API keys
 
+**YNAB:**
 1. Create a YNAB personal access token: **YNAB → Settings → Developer Settings → New Token**
 2. Find your budget ID in the YNAB web app URL:
    ```
@@ -75,16 +94,22 @@ cd ynab-sms-solution
                         This is your budget ID
    ```
 
+**Gemini AI:**
+1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Click **Create API Key**
+3. Copy the key
+
 ### 4. Set secrets in Supabase
 
 ```bash
 # Generate a random webhook secret
 openssl rand -base64 32
 
-# Set all secrets (only 3 required!)
+# Set all secrets (4 required!)
 supabase secrets set WEBHOOK_SECRET=<your-random-secret>
 supabase secrets set YNAB_TOKEN=<your-ynab-token>
 supabase secrets set YNAB_BUDGET_ID=<your-budget-id>
+supabase secrets set GEMINI_API_KEY=<your-gemini-key>
 ```
 
 ### 5. Configure sender mappings
@@ -93,9 +118,9 @@ Edit `supabase/functions/_shared/config.ts` to map SMS senders to your YNAB acco
 
 ```typescript
 export const SENDER_TO_ACCOUNT: Record<string, string> = {
-	airtelmoney: "Airtel Money", // ← Use YOUR YNAB account name
-	momo: "MTN MoMo",
-	absa: "My Bank Account", // ← Whatever you named it in YNAB
+  airtelmoney: "Airtel Money", // ← Use YOUR YNAB account name
+  momo: "MTN MoMo",
+  absa: "My Bank Account", // ← Whatever you named it in YNAB
 };
 ```
 
@@ -194,6 +219,7 @@ Requires Docker Desktop.
 echo "WEBHOOK_SECRET=test-secret" > supabase/.env.local
 echo "YNAB_TOKEN=your-token" >> supabase/.env.local
 echo "YNAB_BUDGET_ID=your-budget-id" >> supabase/.env.local
+echo "GEMINI_API_KEY=your-gemini-key" >> supabase/.env.local
 
 # Start the function
 supabase functions serve sms-webhook --no-verify-jwt --env-file supabase/.env.local
@@ -216,15 +242,15 @@ x-webhook-secret: <your-secret>
 
 ## Configuration
 
-All mappings are in `supabase/functions/_shared/config.ts`. **Use NAMES, not IDs!**
+Account routing is in `supabase/functions/_shared/config.ts`. **Use NAMES, not IDs!**
 
 ### Mapping SMS senders to accounts
 
 ```typescript
 export const SENDER_TO_ACCOUNT: Record<string, string> = {
-	airtelmoney: "Airtel Money", // SMS sender → YNAB account NAME
-	momo: "MTN MoMo",
-	absa: "ABSA Current",
+  airtelmoney: "Airtel Money", // SMS sender → YNAB account NAME
+  momo: "MTN MoMo",
+  absa: "ABSA Current",
 };
 ```
 
@@ -234,42 +260,52 @@ Some banks include "account ending XXXX" in SMS:
 
 ```typescript
 export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
-	"1234": "My Savings", // "ending 1234" → YNAB account NAME
-	"5678": "My Current",
+  "1234": "My Savings", // "ending 1234" → YNAB account NAME
+  "5678": "My Current",
 };
 ```
 
-### Adding category rules
+## How AI parsing works
 
-```typescript
-export const CATEGORY_RULES: Array<{ pattern: RegExp; categoryName: string }> = [
-	{ pattern: /\bairtime|top[- ]?up\b/i, categoryName: "Airtime" },
-	{ pattern: /\bfuel|petrol\b/i, categoryName: "Transport" },
-];
+When an SMS arrives, it's sent to Gemini with a prompt that asks:
+
+1. **Is this a real transaction?** (not a promo, balance check, or conversation)
+2. **What's the amount?** (the transaction amount, not balance)
+3. **What direction?** (inflow = received, outflow = sent/paid)
+4. **Who's the payee?** (extracted from message if mentioned)
+5. **What category?** (Airtime, Groceries, Transfer, etc.)
+
+The AI returns structured JSON that we use to create the YNAB transaction.
+
+### Example AI responses
+
+**Real transaction:**
+```json
+{
+  "is_transaction": true,
+  "reason": "Money transfer to another person",
+  "amount": 100.00,
+  "direction": "outflow",
+  "payee": "John Doe",
+  "category_hint": "Transfer"
+}
 ```
 
-### Spam/ad filtering
-
-Promotional messages are filtered out, even if they contain currency amounts (e.g., "WIN ZMW 5,000!").
-
-**Smart filtering:** A message is only considered spam if it has spam indicators AND **does NOT** contain real transaction verbs (sent, received, credited, debited, etc.). This prevents false positives.
-
-| Message | Result |
-|---------|--------|
-| "WIN ZMW 5,000! Join today → betting.co.zm" | ❌ Filtered (spam keywords + URL, no transaction verb) |
-| "Your first deposit of ZMW 500 was credited" | ✅ Allowed (contains "credited" = real transaction) |
-
-You can customize the spam filter in `config.ts`:
-
-```typescript
-export const SPAM_KEYWORDS = [
-	"welcome bonus",
-	"win big",
-	"betting",
-	"casino",
-	// Add more keywords as needed...
-];
+**Promotional message:**
+```json
+{
+  "is_transaction": false,
+  "reason": "This is a promotional message about winning money, not an actual transaction",
+  "amount": null,
+  "direction": null,
+  "payee": null,
+  "category_hint": null
+}
 ```
+
+### Debugging
+
+All AI responses are logged in Supabase function logs. Check `ai_parsed` and `ai_raw` fields to see what the AI extracted.
 
 ## Environment variables
 
@@ -278,6 +314,24 @@ export const SPAM_KEYWORDS = [
 | `WEBHOOK_SECRET` | Random string to authenticate requests | Yes      |
 | `YNAB_TOKEN`     | Your YNAB personal access token        | Yes      |
 | `YNAB_BUDGET_ID` | The budget to post transactions to     | Yes      |
+| `GEMINI_API_KEY` | Google Gemini API key                  | Yes      |
+
+## Gemini free tier
+
+All Gemini models have **free tiers** with input & output free of charge!
+
+| Model | Description | Free Tier |
+|-------|-------------|-----------|
+| `gemini-3-flash-preview` | Most intelligent, built for speed (default) | ✅ Free |
+| `gemini-2.5-flash` | Hybrid reasoning, stable fallback | ✅ Free |
+| `gemini-2.5-pro` | Most capable, complex reasoning | ✅ Free |
+
+To change models, edit `gemini.ts`:
+```typescript
+const GEMINI_MODEL = "gemini-2.5-pro"; // or any model above
+```
+
+For personal use, you'll never hit the free tier limits!
 
 ## How name-based lookup works
 
@@ -298,7 +352,7 @@ This means:
 ## Customization ideas
 
 - [ ] Add more sender mappings for your banks
-- [ ] Expand category rules (groceries, utilities, etc.)
+- [ ] Train the AI prompt for your specific message formats
 - [ ] Handle transfers between accounts
 - [ ] Auto-add fee transactions for mobile money
 - [ ] Support other currency codes (not just ZMW)
