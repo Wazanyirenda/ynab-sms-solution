@@ -18,6 +18,7 @@ Automatically captures transaction SMS messages from Zambian banks and mobile mo
 - ✅ Airtime auto-categorization and payee assignment
 - ✅ Deduplication via deterministic import IDs
 - ✅ Balance-only message filtering
+- ✅ Spam/ad message filtering (betting promos, ads with currency amounts, etc.)
 - ✅ Manual approval for safety
 
 ## Supported banks/services
@@ -244,6 +245,29 @@ export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
 export const CATEGORY_RULES: Array<{ pattern: RegExp; categoryName: string }> = [
 	{ pattern: /\bairtime|top[- ]?up\b/i, categoryName: "Airtime" },
 	{ pattern: /\bfuel|petrol\b/i, categoryName: "Transport" },
+];
+```
+
+### Spam/ad filtering
+
+Promotional messages are filtered out, even if they contain currency amounts (e.g., "WIN ZMW 5,000!").
+
+**Smart filtering:** A message is only considered spam if it has spam indicators AND **does NOT** contain real transaction verbs (sent, received, credited, debited, etc.). This prevents false positives.
+
+| Message | Result |
+|---------|--------|
+| "WIN ZMW 5,000! Join today → betting.co.zm" | ❌ Filtered (spam keywords + URL, no transaction verb) |
+| "Your first deposit of ZMW 500 was credited" | ✅ Allowed (contains "credited" = real transaction) |
+
+You can customize the spam filter in `config.ts`:
+
+```typescript
+export const SPAM_KEYWORDS = [
+	"welcome bonus",
+	"win big",
+	"betting",
+	"casino",
+	// Add more keywords as needed...
 ];
 ```
 

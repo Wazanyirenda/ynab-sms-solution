@@ -12,10 +12,11 @@
 
 import {
   INCOME_KEYWORDS,
-  OUTFLOW_KEYWORDS,
   isBalanceOnlyMessage,
+  isSpamMessage,
   matchCategoryName,
   matchPayee,
+  OUTFLOW_KEYWORDS,
 } from "./config.ts";
 import { getCategoryIdByName } from "./ynab-lookup.ts";
 
@@ -37,6 +38,7 @@ export interface ParsedTransaction {
 export interface SmsContext {
   parsed: ParsedTransaction | null; // null if we couldn't parse
   isBalanceOnly: boolean; // true if this is just a balance notification
+  isSpam: boolean; // true if this is a spam/ad message (betting, promos, etc.)
   categoryName?: string; // Category name from config rules
   categoryId?: string; // Category ID from YNAB lookup
   payeeName?: string; // Payee name if we have a confident match
@@ -60,21 +62,27 @@ export function parseSmsContext(text: string): SmsContext {
   // Step 1: Check if this is a balance-only message (not a transaction).
   const isBalanceOnly = isBalanceOnlyMessage(text);
 
-  // Step 2: Try to extract amount and direction.
+  // Step 2: Check if this is a spam/ad message (betting promos, ads with amounts, etc.).
+  const isSpam = isSpamMessage(text);
+
+  // Step 3: Try to extract amount and direction.
   const parsed = parseAmount(text);
 
-  // Step 3: Match category rules (by name).
+  // Step 4: Match category rules (by name).
   const categoryName = matchCategoryName(text);
 
-  // Step 4: Look up category ID from cache (if category name matched).
-  const categoryId = categoryName ? getCategoryIdByName(categoryName) : undefined;
+  // Step 5: Look up category ID from cache (if category name matched).
+  const categoryId = categoryName
+    ? getCategoryIdByName(categoryName)
+    : undefined;
 
-  // Step 5: Match payee rules (only for airtime/top-up).
+  // Step 6: Match payee rules (only for airtime/top-up).
   const payeeName = matchPayee(text);
 
   return {
     parsed,
     isBalanceOnly,
+    isSpam,
     categoryName,
     categoryId,
     payeeName,
@@ -179,7 +187,8 @@ export async function makeImportId(input: {
   text: string;
 }): Promise<string> {
   const encoder = new TextEncoder();
-  const raw = `${input.sender}|${input.date}|${input.amountMilli}|${input.text}`;
+  const raw =
+    `${input.sender}|${input.date}|${input.amountMilli}|${input.text}`;
 
   // Use SHA-256 hash for determinism and collision resistance.
   const hash = await crypto.subtle.digest("SHA-256", encoder.encode(raw));

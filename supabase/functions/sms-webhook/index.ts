@@ -24,7 +24,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 // Shared modules.
 import { createYnabClient } from "../_shared/ynab.ts";
 import { ensureCache } from "../_shared/ynab-lookup.ts";
-import { parseSmsContext, normalizeDate, makeImportId } from "../_shared/parsers.ts";
+import {
+  makeImportId,
+  normalizeDate,
+  parseSmsContext,
+} from "../_shared/parsers.ts";
 import { resolveAccountId } from "../_shared/routing.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -157,7 +161,11 @@ async function processWithYnab(params: {
     await ensureCache(client, ynabBudgetId);
   } catch (err) {
     console.error("Failed to fetch YNAB data:", err);
-    return { sent: false, reason: "Failed to fetch YNAB accounts/categories", detail: String(err) };
+    return {
+      sent: false,
+      reason: "Failed to fetch YNAB accounts/categories",
+      detail: String(err),
+    };
   }
 
   // Parse the SMS to extract transaction data.
@@ -166,6 +174,11 @@ async function processWithYnab(params: {
   // Skip balance-only notifications.
   if (smsContext.isBalanceOnly) {
     return { sent: false, reason: "Balance-only message" };
+  }
+
+  // Skip spam/ad messages (betting promos, ads with currency amounts, etc.).
+  if (smsContext.isSpam) {
+    return { sent: false, reason: "Spam/ad message filtered" };
   }
 
   // Skip if we couldn't parse amount/direction.

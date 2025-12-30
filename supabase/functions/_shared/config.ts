@@ -55,15 +55,18 @@ export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
 // Regex patterns to auto-assign categories. First match wins.
 // Use your exact YNAB category NAMES (case-insensitive matching).
 
-export const CATEGORY_RULES: Array<{ pattern: RegExp; categoryName: string }> = [
-  // Airtime/top-up and data purchases
-  { pattern: /\bairtime|top[- ]?up|data\b/i, categoryName: "🛜 Data / Airtime" },
-
-  // Add more rules using your YNAB category names:
-  // { pattern: /\bfuel|petrol|diesel\b/i, categoryName: "Fuel" },
-  // { pattern: /\bshoprite|pick ?n ?pay|spar\b/i, categoryName: "Groceries" },
-  // { pattern: /\bzesco|water|utility\b/i, categoryName: "Utilities" },
-];
+export const CATEGORY_RULES: Array<{ pattern: RegExp; categoryName: string }> =
+  [
+    // Airtime/top-up and data purchases
+    {
+      pattern: /\bairtime|top[- ]?up|data\b/i,
+      categoryName: "🛜 Data / Airtime",
+    },
+    // Add more rules using your YNAB category names:
+    // { pattern: /\bfuel|petrol|diesel\b/i, categoryName: "Fuel" },
+    // { pattern: /\bshoprite|pick ?n ?pay|spar\b/i, categoryName: "Groceries" },
+    // { pattern: /\bzesco|water|utility\b/i, categoryName: "Utilities" },
+  ];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAYEE RULES (for airtime/top-up only)
@@ -113,6 +116,39 @@ export const BALANCE_ONLY_PHRASES = [
   "the balance on your account",
   "available balance is now",
 ];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SPAM / AD DETECTION
+// ═══════════════════════════════════════════════════════════════════════════
+// Phrases and patterns that indicate promotional/ad SMS messages.
+// Messages are ONLY flagged as spam if they have spam indicators AND
+// do NOT contain real transaction verbs (sent, received, credited, etc.).
+// This prevents false positives on real transaction messages.
+
+export const SPAM_KEYWORDS = [
+  // Betting/gambling promotions (very specific)
+  "welcome bonus",
+  "win big",
+  "free spins",
+  "jackpot",
+  "betting",
+  "casino",
+  "moors zambia",
+  "betpawa",
+  "sportybet",
+  // Marketing language (only strong indicators)
+  "sign up now",
+  "register now",
+  "join today",
+  "click here",
+  "tap here",
+  "don't miss out",
+  "act now",
+];
+
+// URL patterns often indicate ads/promos (promotional links)
+export const SPAM_URL_PATTERN =
+  /https?:\/\/|\.com\/|\.co\.zm\/|\.zm\/|-->.*\.zm/i;
 
 // Verbs that indicate an actual transaction (if present, it's NOT balance-only).
 export const TRANSACTION_VERBS =
@@ -184,4 +220,38 @@ export function isBalanceOnlyMessage(text: string): boolean {
   );
   const hasTxnVerb = TRANSACTION_VERBS.test(text);
   return hasBalancePhrase && !hasTxnVerb;
+}
+
+/**
+ * Checks if the SMS is a spam/advertisement message (not a real transaction).
+ * These often contain currency amounts as part of promotional offers.
+ *
+ * IMPORTANT: A message is ONLY considered spam if it has spam indicators
+ * AND does NOT contain real transaction verbs. This prevents filtering out
+ * real transactions that happen to contain words like "deposit" or "bonus".
+ *
+ * Example that WILL be filtered (spam):
+ *   "WIN ZMW 5,000! Join today --> betting.co.zm"
+ *
+ * Example that will NOT be filtered (real transaction):
+ *   "Your first deposit of ZMW 500 was credited to your account"
+ */
+export function isSpamMessage(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  // First check: does this look like a real transaction?
+  // If it has transaction verbs, it's NOT spam (even if it has spam keywords)
+  const hasTransactionVerb = TRANSACTION_VERBS.test(text);
+  if (hasTransactionVerb) {
+    return false; // Real transaction, not spam
+  }
+
+  // Second check: does it have spam indicators?
+  const hasSpamKeyword = SPAM_KEYWORDS.some((keyword) =>
+    lower.includes(keyword)
+  );
+  const hasPromoUrl = SPAM_URL_PATTERN.test(text);
+
+  // Only spam if it has spam indicators AND no transaction verbs
+  return hasSpamKeyword || hasPromoUrl;
 }
