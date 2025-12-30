@@ -6,11 +6,13 @@ Automatically captures transaction SMS messages from Zambian banks and mobile mo
 
 ## How it works
 
-1. **iOS Shortcut** triggers when you receive an SMS containing `ZMW`.
+1. **iOS Shortcut** triggers when you receive **any SMS**.
 2. The Shortcut sends the SMS to your **Supabase Edge Function**.
 3. **Gemini AI** analyzes the message to determine if it's a real transaction.
 4. If it is, the function extracts amount, direction, payee, and category.
 5. The transaction is **posted to YNAB** for your review.
+
+> **Why process ALL messages?** Zambian banks use different currency formats—`ZMW`, `K`, `Kwacha`—so filtering by "ZMW" would miss some transactions. The AI handles filtering, so it's safe to send everything.
 
 ## Why AI?
 
@@ -26,6 +28,7 @@ Gemini AI understands **context**:
 - ✅ Handles casual mentions of money in conversations
 - ✅ Adapts to new message formats automatically
 - ✅ Extracts payee names and suggests categories
+- ✅ Understands all currency formats: `ZMW`, `K`, `Kwacha`
 
 ## Features
 
@@ -147,7 +150,8 @@ This project uses an iOS Shortcut Automation to capture SMS messages and send th
 2. Go to the **Automation** tab
 3. Tap **New Automation** (or **+**)
 4. Scroll down and select **Message**
-5. Choose **Message Contains** and enter: `ZMW`
+5. Leave the filter **blank** to capture ALL incoming SMS
+   - (The AI will filter out non-transactions — promos, OTPs, conversations, etc.)
 6. Enable **Run Immediately** (so it doesn't ask for confirmation)
 7. Tap **Next**
 8. Tap **Create New Shortcut**
@@ -240,6 +244,8 @@ x-webhook-secret: <your-secret>
   "text": "Money sent to John Doe. Amount ZMW 100.00. Your bal is ZMW 500.00."
 }
 ```
+
+> **Note:** The SMS can use any currency format (`ZMW`, `K`, `Kwacha`). The AI understands all of them.
 
 ## Configuration
 

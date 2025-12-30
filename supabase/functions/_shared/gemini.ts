@@ -186,7 +186,7 @@ export async function parseWithGemini(
             temperature: 0.1, // Low temperature for more deterministic responses
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 1024, // Enough for our JSON response
+            maxOutputTokens: 2048, // Enough for our JSON response
             responseMimeType: "application/json", // Force JSON output
         },
     };
