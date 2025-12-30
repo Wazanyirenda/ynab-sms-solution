@@ -114,6 +114,10 @@ supabase secrets set WEBHOOK_SECRET=<your-random-secret>
 supabase secrets set YNAB_TOKEN=<your-ynab-token>
 supabase secrets set YNAB_BUDGET_ID=<your-budget-id>
 supabase secrets set GEMINI_API_KEY=<your-gemini-key>
+
+# Optional: Map account endings to YNAB accounts (keeps your account numbers private!)
+# Useful when you have multiple accounts at the same bank (savings vs current)
+supabase secrets set ACCOUNT_ENDINGS='{"4983":"Absa Current","0878":"Absa Savings","5300":"Stanchart Savings"}'
 ```
 
 ### 5. Configure sender mappings
@@ -215,6 +219,42 @@ This project uses an iOS Shortcut Automation to capture SMS messages and send th
 1. Tap **Done** at the top right
 2. The automation is now active!
 
+## Testing
+
+### Quick test with the test script
+
+The easiest way to test without triggering a real SMS:
+
+```bash
+# Set your webhook secret (one time)
+export WEBHOOK_SECRET=your-secret-here
+
+# Run the test script
+./test-sms.sh
+```
+
+Then just paste any SMS message from your inbox and press Enter twice!
+
+You can also pass the SMS directly:
+
+```bash
+./test-sms.sh "Money sent to John. Amount ZMW 100.00. Your bal is ZMW 500.00." "AirtelMoney"
+```
+
+### Quick test with curl
+
+```bash
+curl -X POST "https://<your-project>.supabase.co/functions/v1/sms-webhook" \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: your-secret" \
+  -d '{
+    "source": "test",
+    "sender": "AirtelMoney",
+    "receivedAt": "Dec 30, 2025 at 12:00",
+    "text": "Money sent to John. Amount ZMW 100.00. Your bal is ZMW 500.00."
+  }'
+```
+
 ## Local development
 
 Requires Docker Desktop.
@@ -263,14 +303,20 @@ export const SENDER_TO_ACCOUNT: Record<string, string> = {
 
 ### Adding account-ending hints
 
-Some banks include "account ending XXXX" in SMS:
+Some banks include "account ending XXXX" in SMS. This is configured via **Supabase secrets** (not in code) so your account numbers stay private:
 
-```typescript
-export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
-  "1234": "My Savings", // "ending 1234" → YNAB account NAME
-  "5678": "My Current",
-};
+```bash
+# Set your account endings (JSON format)
+supabase secrets set ACCOUNT_ENDINGS='{"4983":"Absa Current","0878":"Absa Savings","5300":"Stanchart Savings","1500":"Stanchart Current"}'
 ```
+
+For local development, add to `.env.local`:
+
+```bash
+ACCOUNT_ENDINGS={"4983":"Absa Current","0878":"Absa Savings"}
+```
+
+When an SMS contains "ending 4983", it will route to your "Absa Current" account instead of using the sender mapping.
 
 ## How AI parsing works
 
@@ -349,12 +395,13 @@ All AI responses are logged in Supabase function logs. Check `ai_parsed` and `ai
 
 ## Environment variables
 
-| Variable         | Description                            | Required |
-| ---------------- | -------------------------------------- | -------- |
-| `WEBHOOK_SECRET` | Random string to authenticate requests | Yes      |
-| `YNAB_TOKEN`     | Your YNAB personal access token        | Yes      |
-| `YNAB_BUDGET_ID` | The budget to post transactions to     | Yes      |
-| `GEMINI_API_KEY` | Google Gemini API key                  | Yes      |
+| Variable           | Description                                        | Required |
+| ------------------ | -------------------------------------------------- | -------- |
+| `WEBHOOK_SECRET`   | Random string to authenticate requests             | Yes      |
+| `YNAB_TOKEN`       | Your YNAB personal access token                    | Yes      |
+| `YNAB_BUDGET_ID`   | The budget to post transactions to                 | Yes      |
+| `GEMINI_API_KEY`   | Google Gemini API key                              | Yes      |
+| `ACCOUNT_ENDINGS`  | JSON mapping of account endings → YNAB account names | No       |
 
 ## Gemini free tier
 

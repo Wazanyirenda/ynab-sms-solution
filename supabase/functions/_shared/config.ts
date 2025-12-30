@@ -34,18 +34,43 @@ export const SENDER_TO_ACCOUNT: Record<string, string> = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ACCOUNT ENDING HINTS
+// ACCOUNT ENDING HINTS (from environment variable)
 // ═══════════════════════════════════════════════════════════════════════════
 // Some bank SMS includes "account ending XXXX". This overrides sender mapping.
 // Maps the last 4 digits to your YNAB account NAME.
 //
-// Useful when one bank has multiple accounts (e.g., savings vs current).
+// Set via Supabase secret (keeps your account numbers private!):
+//   supabase secrets set ACCOUNT_ENDINGS='{"4983":"Absa Current","0878":"Absa Savings"}'
+//
+// Or in .env.local for local development:
+//   ACCOUNT_ENDINGS={"4983":"Absa Current","0878":"Absa Savings"}
 
-export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
-  // Example: "ending 1234" → routes to "My Savings Account"
-  // "1234": "My Savings Account",
-  // "5678": "My Current Account",
-};
+/**
+ * Parses the ACCOUNT_ENDINGS environment variable.
+ * Returns an empty object if not set or invalid JSON.
+ */
+function parseAccountEndings(): Record<string, string> {
+  const raw = Deno.env.get("ACCOUNT_ENDINGS");
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    // Validate it's an object with string values
+    if (typeof parsed === "object" && parsed !== null) {
+      return parsed as Record<string, string>;
+    }
+    console.warn("ACCOUNT_ENDINGS is not a valid object, ignoring");
+    return {};
+  } catch (err) {
+    console.warn("Failed to parse ACCOUNT_ENDINGS JSON:", err);
+    return {};
+  }
+}
+
+// Parse once at module load (cached for the function's lifetime)
+export const ACCOUNT_ENDING_HINTS: Record<string, string> =
+  parseAccountEndings();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FALLBACK ACCOUNT NAME
