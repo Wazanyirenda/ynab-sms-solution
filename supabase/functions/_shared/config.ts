@@ -58,8 +58,12 @@ export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
 export const CATEGORY_RULES: Array<{ pattern: RegExp; categoryName: string }> =
   [
     // Airtime/top-up and data purchases
+    // Must be an actual purchase, not just mentioning "airtime" in promo text
+    // Matches: "airtime top-up", "top-up successful", "data bundle"
+    // Does NOT match: "Buy Airtime anywhere" (promotional tagline)
     {
-      pattern: /\bairtime|top[- ]?up|data\b/i,
+      pattern:
+        /airtime top[- ]?up|top[- ]?up.{0,20}(successful|is successful)|data bundle/i,
       categoryName: "🛜 Data / Airtime",
     },
     // Add more rules using your YNAB category names:
@@ -197,9 +201,18 @@ export function matchCategoryName(text: string): string | undefined {
 /**
  * Finds a matching payee for airtime/top-up messages.
  * Returns the payee name or undefined.
+ *
+ * Uses a stricter pattern to avoid matching promotional text like
+ * "Buy Airtime anywhere from your Mobile Money account."
  */
 export function matchPayee(text: string): string | undefined {
-  const isAirtime = /\bairtime|top[- ]?up\b/i.test(text);
+  // Only match actual airtime purchases, not promo mentions
+  // Matches: "airtime top-up", "top-up successful"
+  // Does NOT match: "Buy Airtime anywhere"
+  const isAirtime =
+    /airtime top[- ]?up|top[- ]?up.{0,20}(successful|is successful)/i.test(
+      text,
+    );
   if (!isAirtime) return undefined;
 
   for (const rule of PAYEE_BY_NETWORK) {
