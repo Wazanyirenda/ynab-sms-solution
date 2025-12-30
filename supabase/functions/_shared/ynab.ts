@@ -42,9 +42,20 @@ interface YnabListCategoriesResponse {
   data: { category_groups: any[] };
 }
 
+interface YnabListPayeesResponse {
+  data: { payees: any[] };
+}
+
 interface YnabCreateAccountInput {
   name: string;
-  type: "checking" | "savings" | "cash" | "creditCard" | "lineOfCredit" | "otherAsset" | "otherLiability";
+  type:
+    | "checking"
+    | "savings"
+    | "cash"
+    | "creditCard"
+    | "lineOfCredit"
+    | "otherAsset"
+    | "otherLiability";
   balance?: number; // milliunits; defaults to 0
 }
 
@@ -55,7 +66,10 @@ export function createYnabClient({ token, budgetId }: YnabClientOptions) {
   }
 
   // Tiny helper that attaches auth headers and surfaces API errors with text body.
-  const ynabFetch = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+  const ynabFetch = async <T>(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<T> => {
     const res = await fetch(`${YNAB_BASE_URL}${path}`, {
       ...init,
       headers: {
@@ -91,21 +105,36 @@ export function createYnabClient({ token, budgetId }: YnabClientOptions) {
       return ynabFetch<YnabListCategoriesResponse>(`/budgets/${id}/categories`);
     },
 
+    // Lists payees for a specific budget (needed for AI payee matching).
+    listPayees: (explicitBudgetId?: string) => {
+      const id = explicitBudgetId ?? budgetId;
+      if (!id) throw new Error("budgetId required");
+      return ynabFetch<YnabListPayeesResponse>(`/budgets/${id}/payees`);
+    },
+
     // Creates one transaction; we wrap it in an array because YNAB expects a list.
     createTransaction: (tx: YnabTransaction, explicitBudgetId?: string) => {
       const id = explicitBudgetId ?? budgetId;
       if (!id) throw new Error("budgetId required");
-      return ynabFetch<YnabCreateTransactionsResponse>(`/budgets/${id}/transactions`, {
-        method: "POST",
-        body: JSON.stringify({ transactions: [tx] }),
-      });
+      return ynabFetch<YnabCreateTransactionsResponse>(
+        `/budgets/${id}/transactions`,
+        {
+          method: "POST",
+          body: JSON.stringify({ transactions: [tx] }),
+        },
+      );
     },
 
     // Creates an account (e.g., "Unknown Imports") so we have a safe fallback inbox.
-    createAccount: (account: YnabCreateAccountInput, explicitBudgetId?: string) => {
+    createAccount: (
+      account: YnabCreateAccountInput,
+      explicitBudgetId?: string,
+    ) => {
       const id = explicitBudgetId ?? budgetId;
       if (!id) throw new Error("budgetId required");
-      const payload = { account: { ...account, balance: account.balance ?? 0 } };
+      const payload = {
+        account: { ...account, balance: account.balance ?? 0 },
+      };
       return ynabFetch<YnabCreateAccountResponse>(`/budgets/${id}/accounts`, {
         method: "POST",
         body: JSON.stringify(payload),

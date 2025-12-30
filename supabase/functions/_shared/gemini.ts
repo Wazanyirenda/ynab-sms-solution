@@ -10,6 +10,10 @@
  * - Casual conversations about money
  * - Unusual message formats from new banks/services
  *
+ * NEW: AI now matches against your actual YNAB categories and payees!
+ * - Categories are matched exactly or left blank if uncertain
+ * - Payees are fuzzy-matched against existing payees
+ *
  * Free tier: 15 requests/minute, 1 million tokens/day
  * More than enough for personal use!
  */
@@ -35,13 +39,16 @@ export interface GeminiParsedSms {
     // Direction of money flow: "inflow" (received) or "outflow" (sent/paid)
     direction: "inflow" | "outflow" | null;
 
-    // Who the money was sent to or received from (extracted from message)
+    // Payee name — should match an existing YNAB payee if possible, or be a new name
     payee: string | null;
 
-    // Suggested category based on message content (e.g., "Airtime", "Groceries")
-    category_hint: string | null;
+    // Whether the payee is a new payee (not in existing YNAB payees)
+    is_new_payee: boolean;
 
-    // Clean, human-friendly memo for YNAB (e.g., "Received from Harry Banda via Zamtel")
+    // Category name — must EXACTLY match one of the provided YNAB categories, or null
+    category: string | null;
+
+    // Clean, human-friendly memo for YNAB
     memo: string | null;
 }
 
@@ -53,6 +60,14 @@ export interface GeminiResult {
     parsed?: GeminiParsedSms;
     error?: string;
     raw_response?: string; // Raw response for debugging
+}
+
+/**
+ * Context passed to the AI for better matching.
+ */
+export interface AiContext {
+    categories: string[]; // User's YNAB category names
+    payees: string[]; // User's YNAB payee names
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -71,70 +86,68 @@ const GEMINI_API_URL =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * The prompt template we send to Gemini.
- * This instructs the LLM on how to parse the SMS and what format to return.
+ * Builds the prompt to send to Gemini.
+ * Includes the user's actual YNAB categories and payees for matching.
  */
-const SYSTEM_PROMPT =
-    `You are a financial SMS parser for Zambian banks and mobile money services (Airtel Money, MTN MoMo, Zamtel Money, ABSA, Standard Chartered, etc.).
+function buildPrompt(smsText: string, context: AiContext): string {
+    // Limit lists to avoid token limits (take first 100 of each)
+    const categoryList = context.categories.slice(0, 100).join(", ");
+    const payeeList = context.payees.slice(0, 200).join(", ");
 
-Your job is to analyze SMS messages and determine:
-1. Whether this is an actual financial transaction
-2. Extract transaction details if it is
+    return `You are a financial SMS parser for Zambian banks and mobile money services.
 
-IMPORTANT RULES:
-- is_transaction = TRUE only for real money movements (sent, received, paid, withdrawn, deposited, credited, debited, purchased, top-up)
-- is_transaction = FALSE for:
-  - Balance check notifications (just showing balance, no transaction)
-  - Promotional/advertising messages (even if they mention amounts like "WIN ZMW 5,000!")
-  - OTP/verification codes
-  - General conversations that happen to mention money
-  - Loan offers or pre-approval notifications (unless money was actually disbursed)
-  
-- For amount: Extract the TRANSACTION amount, NOT the remaining balance
-- For direction: 
-  - "inflow" = money received, deposited, credited, refunded
-  - "outflow" = money sent, paid, withdrawn, purchased, debited
-- For payee: Extract the name of the person/business if mentioned, otherwise null
-- For category_hint: Suggest based on context:
-  - "Airtime" for phone credit/data purchases
-  - "Transfer" for person-to-person transfers
-  - "Groceries" for supermarkets
-  - "Utilities" for bills (electricity, water)
-  - "Cash Withdrawal" for ATM/agent withdrawals
-  - "Bank Fees" for transaction fees
-  - null if unclear
-- For memo: Write a detailed but organized memo (max 200 chars).
-  Format: "[Action] [Payee/Details] | Ref: [ID] | Bal: [Balance]"
-  Include transaction/reference IDs and remaining balance if present.
-  Examples:
-  - "Received from Harry Banda via Zamtel | Ref: 001271716055 | Bal: ZMW 23.98"
-  - "Sent to John Doe | TID: PP251230.1234.A12345 | Bal: ZMW 500.00"
-  - "Airtime top-up | Txn: RC251230.1234.H12345 | Bal: ZMW 100.00"
-  - "POS purchase at Shoprite | Bal: ZMW 1,234.56"
-  - "ATM withdrawal | Ref: 123456789"
-  Do NOT include promotional text or marketing messages.
+TASK: Analyze this SMS and extract transaction details.
 
-Respond with ONLY valid JSON, no markdown or explanation:`;
+USER'S YNAB CATEGORIES:
+${categoryList}
 
-/**
- * Builds the full prompt to send to Gemini.
- */
-function buildPrompt(smsText: string): string {
-    return `${SYSTEM_PROMPT}
+USER'S EXISTING YNAB PAYEES:
+${payeeList}
 
-SMS Message:
+RULES:
+
+1. is_transaction:
+   - TRUE only for real money movements (sent, received, paid, withdrawn, deposited, credited, debited, purchased, top-up)
+   - FALSE for: balance checks, promotions ("WIN ZMW 5,000!"), OTPs, conversations, loan offers
+
+2. amount: Extract the TRANSACTION amount, NOT the remaining balance
+
+3. direction:
+   - "inflow" = money received, deposited, credited, refunded
+   - "outflow" = money sent, paid, withdrawn, purchased, debited
+
+4. payee:
+   - Extract the person/business name if mentioned in the SMS
+   - Check if it matches an existing payee from the list above (fuzzy match OK)
+   - Examples: "Harry Banda" → "H. Banda", "shoprite" → "Shoprite"
+   - If MATCHED: set payee to the EXACT name from the payee list, set is_new_payee = false
+   - If NOT MATCHED: still set payee to what you extracted (for reference), set is_new_payee = true
+   - Note: We only use matched payees in YNAB; unmatched names are for memo only
+
+5. category:
+   - MUST exactly match one of the categories listed above (case-insensitive OK)
+   - If unsure, set to null (user will categorize manually)
+   - Common mappings: airtime/data → look for "Airtime" or "Data" category, groceries → "Groceries", etc.
+
+6. memo: Detailed but organized (max 200 chars)
+   - Format: "[Action] [Payee/Details] | Ref: [ID] | Bal: [Balance]"
+   - Include reference IDs and balance if present
+   - Do NOT include promotional text
+
+SMS MESSAGE:
 """
 ${smsText}
 """
 
-Respond with JSON:
+Respond with JSON only:
 {
   "is_transaction": true/false,
   "reason": "brief explanation",
   "amount": number or null,
   "direction": "inflow" or "outflow" or null,
-  "payee": "name" or null,
-  "category_hint": "category" or null,
+  "payee": "matched or new payee name" or null,
+  "is_new_payee": true/false,
+  "category": "exact category name from list" or null,
   "memo": "clean description" or null
 }`;
 }
@@ -145,14 +158,17 @@ Respond with JSON:
 
 /**
  * Parses an SMS message using Gemini AI.
+ * Matches against the user's actual YNAB categories and payees.
  *
  * @param smsText - The full SMS message text
  * @param apiKey - Your Gemini API key (from Google AI Studio)
+ * @param context - User's YNAB categories and payees for matching
  * @returns GeminiResult with parsed data or error
  */
 export async function parseWithGemini(
     smsText: string,
     apiKey: string,
+    context: AiContext,
 ): Promise<GeminiResult> {
     // Build the request payload for Gemini API
     const requestBody = {
@@ -160,7 +176,7 @@ export async function parseWithGemini(
             {
                 parts: [
                     {
-                        text: buildPrompt(smsText),
+                        text: buildPrompt(smsText, context),
                     },
                 ],
             },
@@ -170,7 +186,7 @@ export async function parseWithGemini(
             temperature: 0.1, // Low temperature for more deterministic responses
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 1024, // Increased to avoid truncation
+            maxOutputTokens: 1024, // Enough for our JSON response
             responseMimeType: "application/json", // Force JSON output
         },
     };
@@ -228,6 +244,11 @@ export async function parseWithGemini(
                     error: "Invalid response: missing is_transaction field",
                     raw_response: textContent,
                 };
+            }
+
+            // Default is_new_payee to true if not provided
+            if (parsed.is_new_payee === undefined) {
+                parsed.is_new_payee = true;
             }
 
             return {

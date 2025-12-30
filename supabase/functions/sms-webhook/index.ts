@@ -6,14 +6,17 @@
  * Receives SMS data from iOS Shortcuts and creates transactions in YNAB.
  * Uses Google Gemini AI to intelligently parse SMS messages.
  *
+ * NEW: AI now matches against your actual YNAB categories and payees!
+ *
  * Endpoint: POST /functions/v1/sms-webhook
  *
  * Flow:
  * 1. Validate webhook secret (if configured)
  * 2. Parse the incoming SMS payload
- * 3. Send SMS to Gemini AI for intelligent parsing
- * 4. Route to correct YNAB account based on sender
- * 5. Create the transaction in YNAB
+ * 3. Fetch YNAB categories and payees for AI matching
+ * 4. Send SMS to Gemini AI (with your YNAB data for matching)
+ * 5. Route to correct YNAB account based on sender
+ * 6. Create the transaction in YNAB
  *
  * Configuration: supabase/functions/_shared/config.ts
  */
@@ -23,7 +26,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 // Shared modules.
 import { createYnabClient } from "../_shared/ynab.ts";
-import { ensureCache, getCategoryIdByName } from "../_shared/ynab-lookup.ts";
+import {
+  ensureCache,
+  getAllCategoryNames,
+  getAllPayeeNames,
+  getCategoryIdByName,
+  getPayeeIdByName,
+} from "../_shared/ynab-lookup.ts";
 import { makeImportId, normalizeDate } from "../_shared/parsers.ts";
 import { resolveAccountId } from "../_shared/routing.ts";
 import {
@@ -137,7 +146,9 @@ interface YnabResult {
   detail?: string;
   account?: string;
   category?: string;
-  payee?: string;
+  payee?: string; // Only set if matched to existing YNAB payee
+  payee_matched?: boolean; // Whether payee was matched (vs left blank)
+  payee_extracted?: string; // What AI extracted from SMS (for reference)
   memo?: string;
   amount?: number;
   direction?: string;
@@ -150,7 +161,7 @@ interface YnabResult {
 
 /**
  * Processes an SMS and creates a transaction in YNAB.
- * Uses Gemini AI for intelligent SMS parsing.
+ * Uses Gemini AI for intelligent SMS parsing with YNAB category/payee matching.
  *
  * @param params - SMS context (text, sender, timestamp)
  * @returns Result indicating success or failure with reason
@@ -174,9 +185,33 @@ async function processWithYnab(params: {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Call Gemini AI to parse the SMS.
+  // Initialize YNAB client and fetch categories/payees FIRST.
+  // We need these for AI matching before calling Gemini.
   // ─────────────────────────────────────────────────────────────────────────
-  const geminiResult = await parseWithGemini(text, geminiApiKey);
+  const client = createYnabClient({ token: ynabToken, budgetId: ynabBudgetId });
+
+  try {
+    await ensureCache(client, ynabBudgetId);
+  } catch (err) {
+    console.error("Failed to fetch YNAB data:", err);
+    return {
+      sent: false,
+      reason: "Failed to fetch YNAB accounts/categories/payees",
+      detail: String(err),
+    };
+  }
+
+  // Get category and payee names for AI matching
+  const categories = getAllCategoryNames();
+  const payees = getAllPayeeNames();
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Call Gemini AI to parse the SMS (with YNAB data for matching).
+  // ─────────────────────────────────────────────────────────────────────────
+  const geminiResult = await parseWithGemini(text, geminiApiKey, {
+    categories,
+    payees,
+  });
 
   // If Gemini failed, log the error and skip this message.
   if (!geminiResult.success || !geminiResult.parsed) {
@@ -230,23 +265,6 @@ async function processWithYnab(params: {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Initialize YNAB client and cache.
-  // ─────────────────────────────────────────────────────────────────────────
-  const client = createYnabClient({ token: ynabToken, budgetId: ynabBudgetId });
-
-  try {
-    await ensureCache(client, ynabBudgetId);
-  } catch (err) {
-    console.error("Failed to fetch YNAB data:", err);
-    return {
-      sent: false,
-      reason: "Failed to fetch YNAB accounts/categories",
-      detail: String(err),
-      ai_parsed: aiParsed,
-    };
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
   // Resolve the YNAB account based on sender/message content.
   // This still uses our deterministic routing logic.
   // ─────────────────────────────────────────────────────────────────────────
@@ -261,26 +279,33 @@ async function processWithYnab(params: {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Look up category ID if AI suggested a category.
+  // Look up category ID from AI's matched category.
+  // AI should return an exact category name from our list, or null.
   // ─────────────────────────────────────────────────────────────────────────
   let categoryId: string | undefined;
-  if (aiParsed.category_hint) {
-    categoryId = getCategoryIdByName(aiParsed.category_hint);
-    // If the exact name doesn't match, try some common mappings
+  if (aiParsed.category) {
+    categoryId = getCategoryIdByName(aiParsed.category);
     if (!categoryId) {
-      // Try with emoji prefix for common categories
-      const categoryMappings: Record<string, string> = {
-        "Airtime": "🛜 Data / Airtime",
-        "Data": "🛜 Data / Airtime",
-        "Transfer": "Transfer",
-        "Groceries": "🛒 Groceries",
-        "Utilities": "🏠 Utilities",
-        "Cash Withdrawal": "💵 Cash",
-      };
-      const mappedName = categoryMappings[aiParsed.category_hint];
-      if (mappedName) {
-        categoryId = getCategoryIdByName(mappedName);
-      }
+      console.warn(
+        `AI suggested category "${aiParsed.category}" but it wasn't found in YNAB`,
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Look up payee ID ONLY if it matches an existing YNAB payee.
+  // We NEVER create new payees — user's payee list is carefully organized.
+  // If no match, payee stays blank and the extracted name goes in the memo.
+  // ─────────────────────────────────────────────────────────────────────────
+  let payeeId: string | undefined;
+  let payeeMatched = false;
+  if (aiParsed.payee) {
+    payeeId = getPayeeIdByName(aiParsed.payee);
+    payeeMatched = !!payeeId;
+    if (!payeeMatched) {
+      console.log(
+        `Payee "${aiParsed.payee}" not found in YNAB — leaving blank (no new payee created)`,
+      );
     }
   }
 
@@ -299,34 +324,47 @@ async function processWithYnab(params: {
   // Build the YNAB transaction.
   // ─────────────────────────────────────────────────────────────────────────
   const sign = getSign(aiParsed.direction);
-  
+
   // Use AI-generated memo if available, otherwise fall back to raw SMS
-  // AI memo is cleaner (e.g., "Received from Harry Banda via Zamtel")
   const memo = aiParsed.memo ?? text.slice(0, 200);
-  
-  const transaction = {
+
+  const transaction: Record<string, unknown> = {
     account_id: routing.accountId,
     date: receivedAtIso.slice(0, 10),
     amount: amountMilli * sign,
-    payee_name: aiParsed.payee ?? undefined, // AI-extracted payee
-    memo, // Clean AI-generated memo
-    cleared: "cleared" as const,
+    memo,
+    cleared: "cleared",
     approved: false, // Keep manual approval for safety
     import_id: importId,
-    ...(categoryId ? { category_id: categoryId } : {}),
   };
+
+  // ONLY use payee_id if we matched an existing payee.
+  // We NEVER set payee_name — that would create a new payee in YNAB.
+  if (payeeId) {
+    transaction.payee_id = payeeId;
+  }
+  // If no match, payee stays blank. The extracted name is already in the memo.
+
+  // Add category if matched
+  if (categoryId) {
+    transaction.category_id = categoryId;
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Send to YNAB.
   // ─────────────────────────────────────────────────────────────────────────
   try {
-    const res = await client.createTransaction(transaction);
+    const res = await client.createTransaction(transaction as any);
     return {
       sent: true,
       account: routing.accountName,
-      category: aiParsed.category_hint ?? undefined,
-      payee: aiParsed.payee ?? undefined,
-      memo, // AI-generated clean memo
+      category: aiParsed.category ?? undefined,
+      // Only show payee if it was matched to an existing YNAB payee
+      payee: payeeMatched ? (aiParsed.payee ?? undefined) : undefined,
+      payee_matched: payeeMatched,
+      // Always show what AI extracted (for reference/debugging)
+      payee_extracted: aiParsed.payee ?? undefined,
+      memo,
       amount: aiParsed.amount,
       direction: aiParsed.direction,
       transaction_ids: res.data.transaction_ids,

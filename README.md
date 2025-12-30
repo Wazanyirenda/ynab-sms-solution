@@ -32,8 +32,9 @@ Gemini AI understands **context**:
 - 🤖 **AI-powered parsing** — Gemini understands context, not just patterns
 - 💰 **Smart amount extraction** — Gets transaction amount, not balance
 - ↔️ **Direction detection** — Knows inflow vs outflow from context
-- 👤 **Payee extraction** — Pulls names from messages automatically
-- 🏷️ **Category suggestions** — AI suggests categories (Airtime, Groceries, etc.)
+- 👤 **Smart payee matching** — Matches existing YNAB payees only (never creates new ones)
+- 🏷️ **Smart category matching** — Matches against your actual YNAB categories
+- 📝 **Clean memos** — AI generates detailed, organized memos
 - 🏦 **Multi-account routing** — Routes by SMS sender or account ending
 - 🔄 **Deduplication** — Same SMS won't create duplicate transactions
 - ✋ **Manual approval** — Transactions need your approval in YNAB
@@ -64,7 +65,7 @@ supabase/
 │       ├── parsers.ts        # Utility functions (date, import ID)
 │       ├── routing.ts        # Account routing logic
 │       ├── ynab.ts           # YNAB API client
-│       └── ynab-lookup.ts    # Name→ID resolution
+│       └── ynab-lookup.ts    # Account/Category/Payee lookup & caching
 └── config.toml               # Supabase project config
 ```
 
@@ -267,16 +268,32 @@ export const ACCOUNT_ENDING_HINTS: Record<string, string> = {
 
 ## How AI parsing works
 
-When an SMS arrives, it's sent to Gemini with a prompt that asks:
+When an SMS arrives, it's sent to Gemini **with your actual YNAB data**:
 
-1. **Is this a real transaction?** (not a promo, balance check, or conversation)
-2. **What's the amount?** (the transaction amount, not balance)
-3. **What direction?** (inflow = received, outflow = sent/paid)
-4. **Who's the payee?** (extracted from message if mentioned)
-5. **What category?** (Airtime, Groceries, Transfer, etc.)
-6. **Write a clean memo** (human-friendly description for YNAB)
+1. **Your YNAB categories** — AI picks the best match or leaves blank
+2. **Your YNAB payees** — AI fuzzy-matches or creates new
 
-The AI returns structured JSON that we use to create the YNAB transaction.
+The AI analyzes the SMS and returns:
+
+| Field | How AI handles it |
+|-------|-------------------|
+| Is transaction? | Understands context (not fooled by "WIN ZMW 5,000!") |
+| Amount | Extracts transaction amount, not balance |
+| Direction | Inflow (received) or outflow (sent/paid) |
+| Payee | Fuzzy-matches existing payees or suggests new |
+| Category | Matches your exact YNAB categories or null |
+| Memo | Clean, detailed memo with ref IDs and balance |
+
+### Smart matching examples
+
+| SMS Content | AI Payee Match | AI Category Match |
+|-------------|----------------|-------------------|
+| "Harry Banda" | → "H. Banda" (existing) | — |
+| "shoprite" | → "Shoprite" (existing) | "🛒 Groceries" |
+| "airtime top-up" | → blank (no match) | "🛜 Data / Airtime" |
+| Unknown store | → blank (no match) | null (you categorize) |
+
+**Note:** Payees are NEVER created automatically. If there's no match, the payee field stays blank and the extracted name appears in the memo for your reference.
 
 ### AI-generated memos
 
@@ -300,7 +317,9 @@ Key details (ref numbers, balances) are preserved, but promo text is stripped ou
   "amount": 100.00,
   "direction": "outflow",
   "payee": "John Doe",
-  "category_hint": "Transfer"
+  "is_new_payee": false,
+  "category": "Transfer",
+  "memo": "Sent to John Doe | Ref: PP251230.1234.A12345 | Bal: ZMW 500.00"
 }
 ```
 
@@ -312,7 +331,9 @@ Key details (ref numbers, balances) are preserved, but promo text is stripped ou
   "amount": null,
   "direction": null,
   "payee": null,
-  "category_hint": null
+  "is_new_payee": false,
+  "category": null,
+  "memo": null
 }
 ```
 
@@ -362,13 +383,31 @@ This means:
 - ✅ Delete and recreate accounts? They auto-resolve by name
 - ⚠️ First request after cold start is slightly slower (API call)
 
-## Customization ideas
+## Future Improvements
 
-- [ ] Add more sender mappings for your banks
-- [ ] Train the AI prompt for your specific message formats
-- [ ] Handle transfers between accounts
-- [ ] Auto-add fee transactions for mobile money
-- [ ] Support other currency codes (not just ZMW)
+### 🔥 High Priority
+
+- [ ] **Payee Aliases** — Map common variations to existing payees (e.g., "Harry Banda" → "H. Banda")
+- [ ] **Transaction Fees** — Extract and handle fees as split transactions or separate entries
+- [ ] **Raw SMS Logging** — Store all SMS in Supabase for debugging and historical reference
+
+### 📊 Nice to Have
+
+- [ ] **Balance Reconciliation** — Alert when SMS balance doesn't match YNAB account balance
+- [ ] **Transaction Rules** — Auto-approve trusted recurring transactions
+- [ ] **Daily Summary** — Push notification with spending summary and uncategorized items
+- [ ] **Simple Dashboard** — Web UI showing recent transactions and AI parsing stats
+
+### 🛡️ Reliability
+
+- [ ] **Retry Logic** — Queue failed transactions for automatic retry with exponential backoff
+- [ ] **Health Check Endpoint** — `/health` endpoint to verify YNAB, Gemini, and cache status
+
+### 🧪 Developer Experience
+
+- [ ] **Unit Tests** — Test AI parsing with known SMS examples
+- [ ] **SMS Simulator** — CLI tool to test without real SMS messages
+- [ ] **Multi-currency Support** — Handle USD and other currencies beyond ZMW
 
 ## License
 
