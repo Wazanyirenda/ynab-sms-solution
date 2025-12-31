@@ -319,7 +319,7 @@ The AI analyzes the SMS and returns:
 | Direction | Inflow (received) or outflow (sent/paid) |
 | Payee | Fuzzy-matches existing payees or suggests new |
 | Category | Matches your exact YNAB categories or null |
-| Memo | Clean, detailed memo with ref IDs and balance |
+| Memo | Clean memo with time, ref IDs, and balance |
 
 ### Smart matching examples
 
@@ -334,15 +334,18 @@ The AI analyzes the SMS and returns:
 
 ### AI-generated memos
 
-Instead of dumping the raw SMS into YNAB, the AI writes detailed but organized memos:
+Instead of dumping the raw SMS into YNAB, the AI writes detailed but organized memos with **timestamps**:
+
+- If the SMS contains a time (e.g., "at 14:30"), that time is used
+- If no time is in the SMS, the **received time** from the iOS Shortcut is used as fallback
 
 | Raw SMS | AI Memo |
 |---------|---------|
-| "ZMW 5.00 received from Harry Banda NFS on 30/12/2025 at 11:42 AM. New ZamPay balance is ZMW 23.98. 001271716055 completed. Buy Airtime..." | "Received from Harry Banda via Zamtel \| Ref: 001271716055 \| Bal: ZMW 23.98" |
+| "ZMW 5.00 received from Harry Banda NFS on 30/12/2025 at 11:42 AM. New ZamPay balance is ZMW 23.98. 001271716055 completed. Buy Airtime..." | "Received from Harry Banda via Zamtel \| 11:42 AM \| Ref: 001271716055 \| Bal: ZMW 23.98" |
 | "Your ZMW 10.00 airtime top-up is successful. Your new Airtel Money balance is ZMW 100.00. Txn ID: RC251230..." | "Airtime top-up \| Txn: RC251230... \| Bal: ZMW 100.00" |
-| "Money sent to John Doe on 123456789. Amount ZMW 50.00. Your bal is ZMW 500.00. TID: PP251230..." | "Sent to John Doe \| TID: PP251230... \| Bal: ZMW 500.00" |
+| "Money sent to John Doe on 123456789 at 14:30. Amount ZMW 50.00. Your bal is ZMW 500.00. TID: PP251230..." | "Sent to John Doe \| 14:30 \| TID: PP251230... \| Bal: ZMW 500.00" |
 
-Key details (ref numbers, balances) are preserved, but promo text is stripped out.
+Key details (time, ref numbers, balances) are preserved, but promo text is stripped out.
 
 ### Example AI responses
 
@@ -356,7 +359,7 @@ Key details (ref numbers, balances) are preserved, but promo text is stripped ou
   "payee": "John Doe",
   "is_new_payee": false,
   "category": "Transfer",
-  "memo": "Sent to John Doe | Ref: PP251230.1234.A12345 | Bal: ZMW 500.00"
+  "memo": "Sent to John Doe | 14:30 | Ref: PP251230.1234.A12345 | Bal: ZMW 500.00"
 }
 ```
 
@@ -394,13 +397,13 @@ All Gemini models have **free tiers** with input & output free of charge!
 
 | Model | Description | Free Tier |
 |-------|-------------|-----------|
-| `gemini-3-flash-preview` | Most intelligent, built for speed (default) | ✅ Free |
-| `gemini-2.5-flash` | Hybrid reasoning, stable fallback | ✅ Free |
+| `gemini-2.0-flash` | Fast, stable, reliable (default) | ✅ Free |
+| `gemini-2.5-flash` | Hybrid reasoning, newer | ✅ Free |
 | `gemini-2.5-pro` | Most capable, complex reasoning | ✅ Free |
 
 To change models, edit `gemini.ts`:
 ```typescript
-const GEMINI_MODEL = "gemini-2.5-pro"; // or any model above
+const GEMINI_MODEL = "gemini-2.5-flash"; // or any model above
 ```
 
 For personal use, you'll never hit the free tier limits!
@@ -436,7 +439,6 @@ This means:
 - [ ] **Transaction Rules** — Auto-approve trusted recurring transactions
 - [ ] **Daily Summary** — Push notification with spending summary and uncategorized items
 - [ ] **Simple Dashboard** — Web UI showing recent transactions and AI parsing stats
-- [ ] **Time Logging in Memo** — Include transaction timestamp from SMS in the memo (e.g., "14:30")
 
 ### 🛡️ Reliability
 

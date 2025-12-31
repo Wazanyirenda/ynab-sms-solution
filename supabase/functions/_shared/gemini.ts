@@ -68,16 +68,17 @@ export interface GeminiResult {
 export interface AiContext {
     categories: string[]; // User's YNAB category names
     payees: string[]; // User's YNAB payee names
+    receivedAt?: string; // When the SMS was received (ISO format, used as fallback time)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GEMINI API CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Using Gemini 3 Flash Preview — "most intelligent model built for speed"
+// Using Gemini 2.0 Flash — stable, fast, and reliable
 // All Gemini models have generous FREE tiers (input & output free of charge)
-// Options (all free): gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash
-const GEMINI_MODEL = "gemini-3-flash-preview";
+// Options (all free): gemini-2.0-flash (stable), gemini-2.5-flash, gemini-2.5-pro
+const GEMINI_MODEL = "gemini-2.0-flash";
 const GEMINI_API_URL =
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
@@ -93,6 +94,24 @@ function buildPrompt(smsText: string, context: AiContext): string {
     // Limit lists to avoid token limits (take first 100 of each)
     const categoryList = context.categories.slice(0, 100).join(", ");
     const payeeList = context.payees.slice(0, 200).join(", ");
+
+    // Extract time from receivedAt and convert to Zambia timezone (CAT = UTC+2)
+    // ISO format: "2025-12-31T15:56:14.709Z" → local time "17:56"
+    let fallbackTime = "";
+    if (context.receivedAt) {
+        try {
+            const date = new Date(context.receivedAt);
+            // Add 2 hours for Zambia (Central Africa Time = UTC+2)
+            const zambiaOffset = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+            const localDate = new Date(date.getTime() + zambiaOffset);
+            // Extract HH:MM
+            const hours = String(localDate.getUTCHours()).padStart(2, "0");
+            const minutes = String(localDate.getUTCMinutes()).padStart(2, "0");
+            fallbackTime = `${hours}:${minutes}`;
+        } catch {
+            // If parsing fails, leave empty
+        }
+    }
 
     return `You are a financial SMS parser for Zambian banks and mobile money services.
 
@@ -130,14 +149,20 @@ RULES:
    - Common mappings: airtime/data → look for "Airtime" or "Data" category, groceries → "Groceries", etc.
 
 6. memo: Detailed but organized (max 200 chars)
-   - Format: "[Action] [Payee/Details] | Ref: [ID] | Bal: [Balance]"
+   - Format: "[Action] [Payee/Details] | [HH:MM] | Ref: [ID] | Bal: [Balance]"
+   - ALWAYS include transaction TIME (HH:MM format like "15:44") in the memo
+   - Look for time in SMS first (e.g., "15:44", "11:42 AM", "at 14:30")
+   - If NO time found in SMS text, use EXACTLY this fallback: ${fallbackTime}
    - Include reference IDs and balance if present
+   - Do NOT include dates in the memo, only TIME
    - Do NOT include promotional text
 
 SMS MESSAGE:
 """
 ${smsText}
 """
+
+FALLBACK TIME (use if no time in SMS): ${fallbackTime}
 
 Respond with JSON only:
 {

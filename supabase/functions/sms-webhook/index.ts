@@ -207,10 +207,12 @@ async function processWithYnab(params: {
 
   // ─────────────────────────────────────────────────────────────────────────
   // Call Gemini AI to parse the SMS (with YNAB data for matching).
+  // Pass receivedAt so AI can include time in memo (fallback if not in SMS).
   // ─────────────────────────────────────────────────────────────────────────
   const geminiResult = await parseWithGemini(text, geminiApiKey, {
     categories,
     payees,
+    receivedAt: receivedAtIso,
   });
 
   // If Gemini failed, log the error and skip this message.
