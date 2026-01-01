@@ -192,7 +192,18 @@ RULES:
    - "airtime" = Airtime or data purchase
    - "bill_payment" = Utility bills, merchant payments, till numbers
    - "unknown" = Can't determine the type
-   Hints: "top-up" = airtime, "agent" or "withdraw" = withdrawal, "till" = bill_payment
+   
+   ZAMBIAN PHONE PREFIX RULES (use to determine same_network vs cross_network):
+   - Airtel numbers: start with 097, 077, 97, 77
+   - MTN numbers: start with 096, 076, 96, 76
+   - Zamtel numbers: start with 095, 075, 95, 75
+   
+   Examples:
+   - SMS from Airtel + recipient phone 978902730 (starts with 97) → same_network
+   - SMS from Airtel + recipient phone 966123456 (starts with 96) → cross_network (to MTN)
+   - SMS from MTN + recipient phone 975123456 (starts with 97) → cross_network (to Airtel)
+   
+   Other hints: "top-up" = airtime, "agent" or "withdraw" = withdrawal, "till" = bill_payment
 
 SMS MESSAGE:
 """
