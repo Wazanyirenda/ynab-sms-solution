@@ -6,14 +6,34 @@
  * Fees vary by provider and transfer type. This module handles:
  * - Fee tier lookups based on amount ranges
  * - Different transfer types (same network, cross-network, to bank, etc.)
+ * - SMS notification fees (charged per SMS by some banks)
  *
  * Fee data sources:
  * - https://liquify-zambia.com/help/mobile_money_charges.html (more accurate)
  * - https://077.airtel.co.zm/assets/pdf/AIRTEL-Tariff-Guide-Poster-A1.pdf
+ * - https://www.absa.co.zm/personal/ultimate-plus-account/ (ABSA fees)
  *
- * NOTE: Fees change over time! Update tiers as needed.
+ * CUSTOMIZATION:
+ * - Set FEE_CATEGORY_NAME env var to match your YNAB category for fees
+ * - ABSA fees below are for Ultimate Plus account — adjust for your account type
+ * - Fees change over time! Update tiers as needed.
+ *
  * Last verified: January 2025 (Airtel same-network tested with K1000 → K2 fee)
  */
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The YNAB category name for fee transactions.
+ * Set via FEE_CATEGORY_NAME environment variable.
+ * If not set, fees will be created without a category (user assigns manually).
+ *
+ * Example: FEE_CATEGORY_NAME="🏦 Bank / Transaction Fees"
+ */
+const FEE_CATEGORY_NAME: string | null = Deno.env.get("FEE_CATEGORY_NAME") ||
+    null;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -36,7 +56,7 @@ interface FeeTier {
 interface FeeSchedule {
     tiers: FeeTier[];
     payee: string; // YNAB payee name for the fee (e.g., "Airtel")
-    category: string; // YNAB category name (e.g., "Bank Transaction & Fees")
+    category: string | null; // YNAB category name, or null if not configured
 }
 
 /**
@@ -48,7 +68,8 @@ export type TransferType =
     | "cross_network" // Airtel → MTN, MTN → Zamtel, etc.
     | "to_bank" // Mobile money → Bank account
     | "from_bank" // Bank → Mobile money (usually no fee on mobile side)
-    | "withdrawal" // Cash out at agent
+    | "to_mobile" // Bank → Mobile money (fee on bank side)
+    | "withdrawal" // Cash out at agent or ATM
     | "bill_payment" // Pay utility bills, merchants
     | "airtime" // Airtime/data purchase (usually free)
     | "unknown"; // Couldn't determine type — no fee applied
@@ -87,7 +108,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             // Source: https://liquify-zambia.com/help/mobile_money_charges.html
             same_network: {
                 payee: "Airtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     { min: 0, max: 150, fee: 0.58 },
                     { min: 150, max: 300, fee: 1.1 },
@@ -103,7 +124,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             // TODO: Add when fee data is collected
             cross_network: {
                 payee: "Airtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     // Placeholder — fees are typically higher than same-network
                     // User will collect SMS samples to verify these rates
@@ -114,7 +135,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             // TODO: Add when fee data is collected
             to_bank: {
                 payee: "Airtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     // Placeholder — wallet-to-bank transfer fees
                 ],
@@ -124,7 +145,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             // TODO: Add when fee data is collected
             withdrawal: {
                 payee: "Airtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     // Placeholder — withdrawal fees
                 ],
@@ -133,7 +154,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             // Airtime purchase — usually FREE
             airtime: {
                 payee: "Airtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [], // No fee for airtime purchases
             },
 
@@ -141,7 +162,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             // TODO: Add when fee data is collected
             bill_payment: {
                 payee: "Airtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     // Placeholder — bill payment fees
                 ],
@@ -154,7 +175,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
         mtn: {
             same_network: {
                 payee: "MTN",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     // Source: https://liquify-zambia.com/help/mobile_money_charges.html
                     // TODO: Verify with real transactions
@@ -176,7 +197,7 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
         zamtel: {
             same_network: {
                 payee: "Zamtel",
-                category: "Bank Transaction & Fees",
+                category: FEE_CATEGORY_NAME,
                 tiers: [
                     // TODO: Add Zamtel fees when documented
                 ],
@@ -184,16 +205,41 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // BANK FEES — PLACEHOLDER
+        // ABSA BANK FEES (Ultimate Plus Account)
         // ═══════════════════════════════════════════════════════════════════
-        // Bank fees are often more complex (monthly fees, per-transaction, etc.)
-        // Will add as user documents them
+        // Source: https://www.absa.co.zm/personal/ultimate-plus-account/
+        // Note: ABSA uses FLAT fees (same regardless of amount)
 
         absa: {
-            // ABSA bank transfer fees
-            // TODO: Add when fee data is collected
+            // ABSA → Mobile Money (flat K10 fee)
+            to_mobile: {
+                payee: "Absa",
+                category: FEE_CATEGORY_NAME,
+                tiers: [
+                    { min: 0, max: 1000000, fee: 10.0 }, // Flat fee for any amount
+                ],
+            },
+
+            // ATM withdrawal (flat K20 fee for both Absa and non-Absa ATMs)
+            withdrawal: {
+                payee: "Absa",
+                category: FEE_CATEGORY_NAME,
+                tiers: [
+                    { min: 0, max: 1000000, fee: 20.0 }, // Flat fee for any amount
+                ],
+            },
+
+            // Bill payments — TODO: Add when fee data is collected
+            bill_payment: {
+                payee: "Absa",
+                category: FEE_CATEGORY_NAME,
+                tiers: [],
+            },
         },
 
+        // ═══════════════════════════════════════════════════════════════════
+        // STANDARD CHARTERED FEES — PLACEHOLDER
+        // ═══════════════════════════════════════════════════════════════════
         stanchart: {
             // Standard Chartered transfer fees
             // TODO: Add when fee data is collected
@@ -202,6 +248,34 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
         // Unknown provider — no fees applied
         unknown: {},
     };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SMS NOTIFICATION FEES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * SMS notification fees charged by banks for sending transaction alerts.
+ * These apply to EVERY SMS received from the provider, regardless of transaction type.
+ *
+ * Note: This is separate from transaction fees — it's the cost of receiving the SMS itself.
+ */
+interface SmsNotificationFee {
+    fee: number; // Fee per SMS in ZMW
+    payee: string; // YNAB payee name
+    category: string | null; // YNAB category name, or null if not configured
+}
+
+const SMS_NOTIFICATION_FEES: Partial<Record<Provider, SmsNotificationFee>> = {
+    // ABSA charges K0.50 per SMS notification (if enabled on account)
+    // Source: https://www.absa.co.zm/personal/ultimate-plus-account/
+    absa: {
+        fee: 0.5,
+        payee: "Absa",
+        category: FEE_CATEGORY_NAME,
+    },
+    // Other banks can be added here if they charge SMS fees
+    // Most mobile money providers don't charge for SMS alerts
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FEE CALCULATION FUNCTIONS
@@ -228,7 +302,7 @@ export interface FeeResult {
  * @example
  * // Airtel to Airtel transfer of K1000
  * const result = calculateFee("airtel", "same_network", 1000);
- * // Returns: { fee: 2.0, payee: "Airtel", category: "Bank Transaction & Fees", configured: true }
+ * // Returns: { fee: 2.0, payee: "Airtel", category: FEE_CATEGORY_NAME, configured: true }
  */
 export function calculateFee(
     provider: Provider,
@@ -315,4 +389,31 @@ export function hasFeesConfigured(
     transferType: TransferType,
 ): boolean {
     return FEE_CONFIG[provider]?.[transferType] !== undefined;
+}
+
+/**
+ * Gets the SMS notification fee for a provider.
+ * This is charged per SMS received, regardless of transaction type.
+ *
+ * @param provider - Provider identifier (e.g., "absa")
+ * @returns Fee details or null if provider doesn't charge SMS fees
+ *
+ * @example
+ * // ABSA charges K0.50 per SMS
+ * const result = getSmsNotificationFee("absa");
+ * // Returns: { fee: 0.5, payee: "Absa", category: FEE_CATEGORY_NAME, configured: true }
+ */
+export function getSmsNotificationFee(provider: Provider): FeeResult {
+    const config = SMS_NOTIFICATION_FEES[provider];
+
+    if (!config) {
+        return { fee: null, payee: null, category: null, configured: false };
+    }
+
+    return {
+        fee: config.fee,
+        payee: config.payee,
+        category: config.category,
+        configured: true,
+    };
 }

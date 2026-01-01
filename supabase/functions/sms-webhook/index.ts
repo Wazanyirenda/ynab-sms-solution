@@ -43,7 +43,7 @@ import {
 } from "../_shared/gemini.ts";
 import {
   calculateFee,
-  FeeResult,
+  getSmsNotificationFee,
   senderToProvider,
   TransferType,
 } from "../_shared/fee-calculator.ts";
@@ -160,12 +160,18 @@ interface YnabResult {
   direction?: string;
   transaction_ids?: string[];
   duplicate_import_ids?: string[];
-  // Fee transaction details (if applicable)
+  // Transaction fee details (if applicable)
   fee?: {
     amount: number; // Fee amount in ZMW
     payee: string | null; // Fee payee (e.g., "Airtel")
     transaction_id?: string; // YNAB transaction ID for the fee
     transfer_type?: string; // Type of transfer that triggered the fee
+  };
+  // SMS notification fee details (if applicable, e.g., ABSA K0.50 per SMS)
+  sms_fee?: {
+    amount: number; // SMS notification fee in ZMW
+    payee: string | null; // Fee payee (e.g., "Absa")
+    transaction_id?: string; // YNAB transaction ID for the SMS fee
   };
   // AI parsing output for debugging
   ai_parsed?: GeminiParsedSms;
@@ -382,13 +388,15 @@ async function processWithYnab(params: {
       transfer_type?: string;
     } | undefined;
 
-    // Only calculate fees for outflows with a known transfer type
+    // Determine the provider from SMS sender (used for both transaction and SMS fees)
+    const provider = senderToProvider(sender);
+
+    // Only calculate transaction fees for outflows with a known transfer type
     if (
       aiParsed.direction === "outflow" &&
       aiParsed.transfer_type &&
       aiParsed.transfer_type !== "unknown"
     ) {
-      const provider = senderToProvider(sender);
       const feeResult = calculateFee(
         provider,
         aiParsed.transfer_type as TransferType,
@@ -467,6 +475,77 @@ async function processWithYnab(params: {
       }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Create SMS notification fee (if applicable).
+    // Some banks (like ABSA) charge per SMS notification received.
+    // This is separate from transaction fees — it's the cost of the SMS itself.
+    // ─────────────────────────────────────────────────────────────────────────
+    let smsFeeInfo:
+      | { amount: number; payee: string | null; transaction_id?: string }
+      | undefined;
+
+    const smsNotificationFee = getSmsNotificationFee(provider);
+    if (smsNotificationFee.fee && smsNotificationFee.fee > 0) {
+      console.log(
+        `SMS notification fee: K${smsNotificationFee.fee} for ${provider}`,
+      );
+
+      // Look up category ID for the SMS fee
+      const smsFeeCategoryId = smsNotificationFee.category
+        ? getCategoryIdByName(smsNotificationFee.category)
+        : undefined;
+
+      // Look up payee ID for the SMS fee
+      const smsFeePayeeId = smsNotificationFee.payee
+        ? getPayeeIdByName(smsNotificationFee.payee)
+        : undefined;
+
+      // Build the SMS notification fee transaction
+      // Use transaction_ref from AI if available, otherwise use import ID
+      const refId = aiParsed.transaction_ref ?? importId;
+
+      // Create unique import ID for SMS fee: "ntf:XXXX..." (notification fee)
+      const smsFeeImportId = importId.replace(/^sms:/, "ntf:");
+
+      const smsFeeTransaction: Record<string, unknown> = {
+        account_id: routing.accountId,
+        date: receivedAtIso.slice(0, 10),
+        amount: -toMilliunits(smsNotificationFee.fee), // Always outflow (negative)
+        memo: `SMS Notification Fee: Ref: ${refId}`,
+        cleared: "cleared",
+        approved: false,
+        import_id: smsFeeImportId,
+      };
+
+      // Add payee if matched
+      if (smsFeePayeeId) {
+        smsFeeTransaction.payee_id = smsFeePayeeId;
+      }
+
+      // Add category if matched
+      if (smsFeeCategoryId) {
+        smsFeeTransaction.category_id = smsFeeCategoryId;
+      }
+
+      // Create the SMS fee transaction in YNAB
+      try {
+        const smsFeeRes = await client.createTransaction(
+          smsFeeTransaction as any,
+        );
+        smsFeeInfo = {
+          amount: smsNotificationFee.fee,
+          payee: smsNotificationFee.payee,
+          transaction_id: smsFeeRes.data.transaction_ids?.[0],
+        };
+        console.log(
+          `SMS notification fee transaction created: K${smsNotificationFee.fee}`,
+        );
+      } catch (smsFeeErr) {
+        // Log but don't fail the whole request if SMS fee creation fails
+        console.error("Failed to create SMS notification fee:", smsFeeErr);
+      }
+    }
+
     return {
       sent: true,
       account: routing.accountName,
@@ -481,7 +560,8 @@ async function processWithYnab(params: {
       direction: aiParsed.direction,
       transaction_ids: res.data.transaction_ids,
       duplicate_import_ids: res.data.duplicate_import_ids,
-      fee: feeInfo, // Include fee info if a fee transaction was created
+      fee: feeInfo, // Include transaction fee info if created
+      sms_fee: smsFeeInfo, // Include SMS notification fee info if created
       ai_parsed: aiParsed,
       ai_raw: geminiResult.raw_response,
     };

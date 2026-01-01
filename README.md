@@ -117,6 +117,10 @@ supabase secrets set GEMINI_API_KEY=<your-gemini-key>
 # Optional: Map account endings to YNAB accounts (keeps your account numbers private!)
 # Useful when you have multiple accounts at the same bank (savings vs current)
 supabase secrets set ACCOUNT_ENDINGS='{"4983":"Absa Current","0878":"Absa Savings","5300":"Stanchart Savings"}'
+
+# Optional: Set your YNAB category name for transaction fees
+# If not set, fee transactions will be uncategorized (you assign manually)
+supabase secrets set FEE_CATEGORY_NAME="🏦 Bank / Transaction Fees"
 ```
 
 ### 5. Configure sender mappings
@@ -455,14 +459,42 @@ Currently configured (edit `fee-calculator.ts` to add more):
 | Airtel | Cross-network, to-bank, withdrawal | 🔜 Placeholder |
 | MTN | Same network | 🔜 Placeholder |
 | Zamtel | All | 🔜 Placeholder |
-| Banks | All | 🔜 Placeholder |
+| **ABSA** | **To mobile money** | ✅ K10 flat fee* |
+| **ABSA** | **ATM withdrawal** | ✅ K20 flat fee* |
+| **ABSA** | **SMS notification** | ✅ K0.50 per SMS* |
+
+> \* **ABSA fees shown are for Ultimate Plus account.** Other account types (Ignition, Premier, Prestige, etc.) may have different fees. Check your account's tariff guide and update `fee-calculator.ts` accordingly.
+
+### SMS Notification Fees
+
+Some banks charge per SMS notification. This is **separate from transaction fees** — it's the cost of receiving the SMS alert itself.
+
+| Provider | SMS Fee | Notes |
+|----------|---------|-------|
+| ABSA | K0.50 | Charged for every SMS alert received |
+| Airtel/MTN/Zamtel | Free | No SMS notification charges |
+
+When an ABSA transaction SMS arrives, the system automatically creates:
+1. **Main transaction** (inflow/outflow)
+2. **SMS notification fee** — K0.50 outflow with memo "SMS Notification Fee: Ref: {txn_id}"
 
 ### Fee data sources
 
 - [Liquify Zambia Fee Table](https://liquify-zambia.com/help/mobile_money_charges.html) — More accurate, community-maintained
 - [Airtel Official Tariff](https://077.airtel.co.zm/assets/pdf/AIRTEL-Tariff-Guide-Poster-A1.pdf) — May be outdated
+- [ABSA Ultimate Plus Account](https://www.absa.co.zm/personal/ultimate-plus-account/) — ABSA fee structure
 
 > **Note:** Fees change over time! Verify against your actual transactions and update `fee-calculator.ts` as needed.
+
+### Configuring fee category
+
+Fee transactions are assigned to the category specified by the `FEE_CATEGORY_NAME` environment variable:
+
+```bash
+supabase secrets set FEE_CATEGORY_NAME="🏦 Bank / Transaction Fees"
+```
+
+If not set, fee transactions will be created **without a category** — you'll assign them manually in YNAB.
 
 ### Adding new fee schedules
 
@@ -472,7 +504,7 @@ Edit `supabase/functions/_shared/fee-calculator.ts`:
 // Example: Add Airtel cross-network fees
 cross_network: {
   payee: "Airtel",
-  category: "Bank Transaction & Fees",
+  category: FEE_CATEGORY_NAME, // Uses env var or null
   tiers: [
     { min: 0, max: 150, fee: 2.58 },
     { min: 150, max: 300, fee: 5.10 },
@@ -480,6 +512,36 @@ cross_network: {
   ],
 },
 ```
+
+### Customizing ABSA fees for your account type
+
+ABSA has different account types with varying fee structures:
+- **Ultimate Plus**: K10 to mobile, K20 ATM, K0.50 SMS (default in code)
+- **Ignition**: Different fees — check your tariff guide
+- **Premier/Prestige**: Different fees — check your tariff guide
+
+To customize for your account, edit `fee-calculator.ts` and update the `absa` section:
+
+```typescript
+absa: {
+  to_mobile: {
+    payee: "Absa",
+    category: FEE_CATEGORY_NAME,
+    tiers: [
+      { min: 0, max: 1000000, fee: 15.0 }, // ← Change to your fee
+    ],
+  },
+  withdrawal: {
+    payee: "Absa",
+    category: FEE_CATEGORY_NAME,
+    tiers: [
+      { min: 0, max: 1000000, fee: 25.0 }, // ← Change to your fee
+    ],
+  },
+},
+```
+
+Find your account's fees at: [ABSA Personal Banking](https://www.absa.co.zm/personal/)
 
 ## Future Improvements
 

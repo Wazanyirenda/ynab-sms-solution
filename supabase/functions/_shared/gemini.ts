@@ -59,7 +59,8 @@ export interface GeminiParsedSms {
     // "same_network" = Airtel→Airtel, MTN→MTN (person-to-person same provider)
     // "cross_network" = Airtel→MTN, etc. (different mobile money networks)
     // "to_bank" = Mobile money → Bank account
-    // "withdrawal" = Cash out at agent
+    // "to_mobile" = Bank → Mobile money (e.g., ABSA to Airtel)
+    // "withdrawal" = Cash out at agent or ATM
     // "airtime" = Airtime/data purchase
     // "bill_payment" = Utility bills, merchants
     // "unknown" = Can't determine
@@ -67,6 +68,7 @@ export interface GeminiParsedSms {
         | "same_network"
         | "cross_network"
         | "to_bank"
+        | "to_mobile"
         | "withdrawal"
         | "airtime"
         | "bill_payment"
@@ -158,12 +160,14 @@ RULES:
    - "outflow" = money sent, paid, withdrawn, purchased, debited
 
 4. payee:
-   - Extract the FULL person/business name exactly as it appears in the SMS
+   - Extract the FULL person/business name ONLY if it is EXPLICITLY mentioned in the SMS
+   - Do NOT guess or infer a payee — if the SMS doesn't name who the transaction was with, set payee to null
    - Do NOT abbreviate names (e.g., keep "MISHECK MKANDAWIRE", not "M. Mkandawire")
-   - Check if it matches an existing payee from the list above (fuzzy match OK)
+   - Check if the extracted name matches an existing payee from the list above (fuzzy match OK)
    - If MATCHED: set payee to the EXACT name from the payee list, set is_new_payee = false
    - If NOT MATCHED: set payee to the FULL name you extracted (for memo reference), set is_new_payee = true
-   - Note: We only use matched payees in YNAB; unmatched names go in the memo
+   - If NO payee mentioned in SMS: set payee to null, set is_new_payee = false
+   - IMPORTANT: Generic bank messages like "debited from your account" without naming the recipient → payee = null
 
 5. category:
    - MUST exactly match one of the categories listed above (case-insensitive OK)
@@ -189,7 +193,8 @@ RULES:
    - "same_network" = Person-to-person on same provider (Airtel→Airtel, MTN→MTN)
    - "cross_network" = Transfer to different mobile money (Airtel→MTN, MTN→Zamtel)
    - "to_bank" = Mobile money → Bank account transfer
-   - "withdrawal" = Cash withdrawal at agent
+   - "to_mobile" = Bank → Mobile money transfer (e.g., ABSA to Airtel)
+   - "withdrawal" = Cash withdrawal at agent or ATM
    - "airtime" = Airtime or data purchase
    - "bill_payment" = Utility bills, merchant payments, till numbers
    - "unknown" = Can't determine the type
@@ -224,7 +229,7 @@ Respond with JSON only:
   "category": "exact category name from list" or null,
   "memo": "clean description" or null,
   "transaction_ref": "reference ID" or null,
-  "transfer_type": "same_network" | "cross_network" | "to_bank" | "withdrawal" | "airtime" | "bill_payment" | "unknown" or null
+  "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "unknown" or null
 }`;
 }
 
