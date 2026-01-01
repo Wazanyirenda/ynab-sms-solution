@@ -158,12 +158,12 @@ RULES:
    - "outflow" = money sent, paid, withdrawn, purchased, debited
 
 4. payee:
-   - Extract the person/business name if mentioned in the SMS
+   - Extract the FULL person/business name exactly as it appears in the SMS
+   - Do NOT abbreviate names (e.g., keep "MISHECK MKANDAWIRE", not "M. Mkandawire")
    - Check if it matches an existing payee from the list above (fuzzy match OK)
-   - Examples: "Harry Banda" → "H. Banda", "shoprite" → "Shoprite"
    - If MATCHED: set payee to the EXACT name from the payee list, set is_new_payee = false
-   - If NOT MATCHED: still set payee to what you extracted (for reference), set is_new_payee = true
-   - Note: We only use matched payees in YNAB; unmatched names are for memo only
+   - If NOT MATCHED: set payee to the FULL name you extracted (for memo reference), set is_new_payee = true
+   - Note: We only use matched payees in YNAB; unmatched names go in the memo
 
 5. category:
    - MUST exactly match one of the categories listed above (case-insensitive OK)
@@ -171,7 +171,8 @@ RULES:
    - Common mappings: airtime/data → look for "Airtime" or "Data" category, groceries → "Groceries", etc.
 
 6. memo: Detailed but organized (max 200 chars)
-   - Format: "[Action] [Payee/Details] | [HH:MM] | Ref: [ID] | Bal: [Balance]"
+   - Format: "[Action] [Full Payee Name] | [HH:MM] | Ref: [ID] | Bal: [Balance]"
+   - Use the FULL payee name (do NOT abbreviate, e.g., "MISHECK MKANDAWIRE" not "M. Mkandawire")
    - ALWAYS include transaction TIME (HH:MM format like "15:44") in the memo
    - Look for time in SMS first (e.g., "15:44", "11:42 AM", "at 14:30")
    - If NO time found in SMS text, use EXACTLY this fallback: ${fallbackTime}
