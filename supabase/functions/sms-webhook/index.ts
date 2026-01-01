@@ -414,6 +414,12 @@ async function processWithYnab(params: {
         // Build the fee transaction
         // Use transaction_ref from AI if available, otherwise use import ID
         const refId = aiParsed.transaction_ref ?? importId;
+
+        // Create a shorter fee import ID to fit YNAB's 36 char limit
+        // Original importId is "sms:XXXX..." (36 chars), so we replace prefix
+        // Result: "fee:XXXX..." (36 chars) — unique and within limit
+        const feeImportId = importId.replace(/^sms:/, "fee:");
+
         const feeTransaction: Record<string, unknown> = {
           account_id: routing.accountId,
           date: receivedAtIso.slice(0, 10),
@@ -421,7 +427,7 @@ async function processWithYnab(params: {
           memo: `Transaction Fee: Ref: ${refId}`,
           cleared: "cleared",
           approved: false,
-          import_id: `fee_${importId}`, // Unique ID to prevent duplicate fees
+          import_id: feeImportId, // Unique ID to prevent duplicate fees
         };
 
         // Add payee if matched
