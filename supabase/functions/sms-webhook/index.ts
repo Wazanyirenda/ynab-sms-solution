@@ -41,6 +41,12 @@ import {
   parseWithGemini,
   toMilliunits,
 } from "../_shared/gemini.ts";
+import {
+  calculateFee,
+  FeeResult,
+  senderToProvider,
+  TransferType,
+} from "../_shared/fee-calculator.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT VARIABLES
@@ -154,6 +160,13 @@ interface YnabResult {
   direction?: string;
   transaction_ids?: string[];
   duplicate_import_ids?: string[];
+  // Fee transaction details (if applicable)
+  fee?: {
+    amount: number; // Fee amount in ZMW
+    payee: string | null; // Fee payee (e.g., "Airtel")
+    transaction_id?: string; // YNAB transaction ID for the fee
+    transfer_type?: string; // Type of transfer that triggered the fee
+  };
   // AI parsing output for debugging
   ai_parsed?: GeminiParsedSms;
   ai_raw?: string;
@@ -357,6 +370,97 @@ async function processWithYnab(params: {
   // ─────────────────────────────────────────────────────────────────────────
   try {
     const res = await client.createTransaction(transaction as any);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Create fee transaction (if applicable).
+    // Fees only apply to outflows (when YOU send money, not when you receive).
+    // ─────────────────────────────────────────────────────────────────────────
+    let feeInfo: {
+      amount: number;
+      payee: string | null;
+      transaction_id?: string;
+      transfer_type?: string;
+    } | undefined;
+
+    // Only calculate fees for outflows with a known transfer type
+    if (
+      aiParsed.direction === "outflow" &&
+      aiParsed.transfer_type &&
+      aiParsed.transfer_type !== "unknown"
+    ) {
+      const provider = senderToProvider(sender);
+      const feeResult = calculateFee(
+        provider,
+        aiParsed.transfer_type as TransferType,
+        aiParsed.amount,
+      );
+
+      // Only create fee transaction if fee is > 0 and configured
+      if (feeResult.fee && feeResult.fee > 0) {
+        console.log(
+          `Fee calculated: K${feeResult.fee} for ${provider}/${aiParsed.transfer_type}`,
+        );
+
+        // Look up category ID for fees (e.g., "Bank Transaction & Fees")
+        const feeCategoryId = feeResult.category
+          ? getCategoryIdByName(feeResult.category)
+          : undefined;
+
+        // Look up payee ID for fee provider (e.g., "Airtel")
+        const feePayeeId = feeResult.payee
+          ? getPayeeIdByName(feeResult.payee)
+          : undefined;
+
+        // Build the fee transaction
+        // Use transaction_ref from AI if available, otherwise use import ID
+        const refId = aiParsed.transaction_ref ?? importId;
+        const feeTransaction: Record<string, unknown> = {
+          account_id: routing.accountId,
+          date: receivedAtIso.slice(0, 10),
+          amount: -toMilliunits(feeResult.fee), // Always outflow (negative)
+          memo: `Transaction Fee: Ref: ${refId}`,
+          cleared: "cleared",
+          approved: false,
+          import_id: `fee_${importId}`, // Unique ID to prevent duplicate fees
+        };
+
+        // Add payee if matched
+        if (feePayeeId) {
+          feeTransaction.payee_id = feePayeeId;
+        }
+
+        // Add category if matched
+        if (feeCategoryId) {
+          feeTransaction.category_id = feeCategoryId;
+        }
+
+        // Create the fee transaction in YNAB
+        try {
+          const feeRes = await client.createTransaction(feeTransaction as any);
+          feeInfo = {
+            amount: feeResult.fee,
+            payee: feeResult.payee,
+            transaction_id: feeRes.data.transaction_ids?.[0],
+            transfer_type: aiParsed.transfer_type,
+          };
+          console.log(`Fee transaction created: K${feeResult.fee}`);
+        } catch (feeErr) {
+          // Log but don't fail the whole request if fee creation fails
+          console.error("Failed to create fee transaction:", feeErr);
+        }
+      } else if (feeResult.configured && feeResult.fee === 0) {
+        // Fee is configured as FREE (e.g., airtime purchases)
+        console.log(
+          `No fee for ${provider}/${aiParsed.transfer_type} (configured as free)`,
+        );
+      } else if (!feeResult.configured) {
+        // Fee not configured for this combination
+        console.log(
+          `Fee not configured for ${provider}/${aiParsed.transfer_type}`,
+        );
+      }
+    }
+
     return {
       sent: true,
       account: routing.accountName,
@@ -371,6 +475,7 @@ async function processWithYnab(params: {
       direction: aiParsed.direction,
       transaction_ids: res.data.transaction_ids,
       duplicate_import_ids: res.data.duplicate_import_ids,
+      fee: feeInfo, // Include fee info if a fee transaction was created
       ai_parsed: aiParsed,
       ai_raw: geminiResult.raw_response,
     };

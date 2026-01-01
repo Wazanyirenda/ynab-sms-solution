@@ -50,6 +50,28 @@ export interface GeminiParsedSms {
 
     // Clean, human-friendly memo for YNAB
     memo: string | null;
+
+    // Transaction reference ID (e.g., "MP251230.1955.Z13962", "001271716055")
+    // Used to link fee transactions back to the main transaction
+    transaction_ref: string | null;
+
+    // Type of transfer — used for fee calculation
+    // "same_network" = Airtel→Airtel, MTN→MTN (person-to-person same provider)
+    // "cross_network" = Airtel→MTN, etc. (different mobile money networks)
+    // "to_bank" = Mobile money → Bank account
+    // "withdrawal" = Cash out at agent
+    // "airtime" = Airtime/data purchase
+    // "bill_payment" = Utility bills, merchants
+    // "unknown" = Can't determine
+    transfer_type:
+        | "same_network"
+        | "cross_network"
+        | "to_bank"
+        | "withdrawal"
+        | "airtime"
+        | "bill_payment"
+        | "unknown"
+        | null;
 }
 
 /**
@@ -157,6 +179,21 @@ RULES:
    - Do NOT include dates in the memo, only TIME
    - Do NOT include promotional text
 
+7. transaction_ref: Extract the transaction/reference ID if present
+   - Look for patterns like "TID: XX123456", "Ref: PP260101.0959.F47740", "Txn ID: 001234"
+   - Return ONLY the ID part (e.g., "MP251230.1955.Z13962"), not the label
+   - This is used to link fee transactions to the main transaction
+
+8. transfer_type: Determine what kind of transfer this is (for fee calculation):
+   - "same_network" = Person-to-person on same provider (Airtel→Airtel, MTN→MTN)
+   - "cross_network" = Transfer to different mobile money (Airtel→MTN, MTN→Zamtel)
+   - "to_bank" = Mobile money → Bank account transfer
+   - "withdrawal" = Cash withdrawal at agent
+   - "airtime" = Airtime or data purchase
+   - "bill_payment" = Utility bills, merchant payments, till numbers
+   - "unknown" = Can't determine the type
+   Hints: "top-up" = airtime, "agent" or "withdraw" = withdrawal, "till" = bill_payment
+
 SMS MESSAGE:
 """
 ${smsText}
@@ -173,7 +210,9 @@ Respond with JSON only:
   "payee": "matched or new payee name" or null,
   "is_new_payee": true/false,
   "category": "exact category name from list" or null,
-  "memo": "clean description" or null
+  "memo": "clean description" or null,
+  "transaction_ref": "reference ID" or null,
+  "transfer_type": "same_network" | "cross_network" | "to_bank" | "withdrawal" | "airtime" | "bill_payment" | "unknown" or null
 }`;
 }
 

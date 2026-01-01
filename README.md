@@ -38,6 +38,7 @@ Gemini AI understands **context**:
 - 🏦 **Multi-account routing** — Routes by SMS sender or account ending
 - 🔄 **Deduplication** — Same SMS won't create duplicate transactions
 - ✋ **Manual approval** — Transactions need your approval in YNAB
+- 💸 **Automatic fee tracking** — Creates separate fee transactions linked to the original
 
 ## Supported banks/services
 
@@ -61,6 +62,7 @@ supabase/
 │   │   └── deno.json         # Deno config
 │   └── _shared/
 │       ├── gemini.ts         # 🤖 Gemini AI client (SMS parsing)
+│       ├── fee-calculator.ts # 💸 Transaction fee calculation
 │       ├── config.ts         # ⚙️ Sender→account mappings (edit this!)
 │       ├── parsers.ts        # Utility functions (date, import ID)
 │       ├── routing.ts        # Account routing logic
@@ -424,12 +426,67 @@ This means:
 - ✅ Delete and recreate accounts? They auto-resolve by name
 - ⚠️ First request after cold start is slightly slower (API call)
 
+## Transaction Fees
+
+When you send money, mobile money providers and banks charge fees. This system automatically creates a separate fee transaction linked to the original transfer.
+
+### How it works
+
+1. **AI extracts transfer type** — Gemini determines if it's same-network, cross-network, to-bank, etc.
+2. **Fee is calculated** — Based on provider, transfer type, and amount (using tiered fee schedules)
+3. **Separate transaction created** — Fee appears as its own YNAB entry
+
+### Fee transaction format
+
+| Field | Value |
+|-------|-------|
+| **Payee** | Provider name (e.g., "Airtel") |
+| **Category** | "Bank Transaction & Fees" |
+| **Memo** | `Transaction Fee: Ref: {transaction_id}` |
+| **Amount** | Calculated fee (outflow) |
+
+### Supported fee schedules
+
+Currently configured (edit `fee-calculator.ts` to add more):
+
+| Provider | Transfer Type | Status |
+|----------|--------------|--------|
+| Airtel | Same network (Airtel→Airtel) | ✅ Verified |
+| Airtel | Cross-network, to-bank, withdrawal | 🔜 Placeholder |
+| MTN | Same network | 🔜 Placeholder |
+| Zamtel | All | 🔜 Placeholder |
+| Banks | All | 🔜 Placeholder |
+
+### Fee data sources
+
+- [Liquify Zambia Fee Table](https://liquify-zambia.com/help/mobile_money_charges.html) — More accurate, community-maintained
+- [Airtel Official Tariff](https://077.airtel.co.zm/assets/pdf/AIRTEL-Tariff-Guide-Poster-A1.pdf) — May be outdated
+
+> **Note:** Fees change over time! Verify against your actual transactions and update `fee-calculator.ts` as needed.
+
+### Adding new fee schedules
+
+Edit `supabase/functions/_shared/fee-calculator.ts`:
+
+```typescript
+// Example: Add Airtel cross-network fees
+cross_network: {
+  payee: "Airtel",
+  category: "Bank Transaction & Fees",
+  tiers: [
+    { min: 0, max: 150, fee: 2.58 },
+    { min: 150, max: 300, fee: 5.10 },
+    // ... more tiers
+  ],
+},
+```
+
 ## Future Improvements
 
 ### 🔥 High Priority
 
 - [ ] **Payee Aliases** — Map common variations to existing payees (e.g., "Harry Banda" → "H. Banda")
-- [ ] **Transaction Fees** — Extract and handle fees as split transactions or separate entries
+- [x] **Transaction Fees** — ✅ Implemented! Auto-creates separate fee transactions linked by reference ID
 - [ ] **Raw SMS Logging** — Store all SMS in Supabase for debugging and historical reference
 - [ ] **Bank Email Analysis** — Parse transaction emails from banks (e.g., monthly statements, receipts) using AI
 
