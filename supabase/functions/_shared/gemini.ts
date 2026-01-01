@@ -1,69 +1,23 @@
 /**
- * ═══════════════════════════════════════════════════════════════════════════
  * GEMINI AI CLIENT — Parse SMS messages using Google's Gemini LLM.
- * ═══════════════════════════════════════════════════════════════════════════
  *
- * This module handles calling the Gemini API to intelligently parse SMS
- * messages and extract transaction details. The LLM can understand context
- * better than regex, handling edge cases like:
- * - Promotional messages mentioning amounts ("WIN ZMW 5,000!")
- * - Casual conversations about money
- * - Unusual message formats from new banks/services
+ * Uses AI to intelligently parse SMS messages and extract transaction details.
+ * Matches against your actual YNAB categories and payees for accurate categorization.
  *
- * NEW: AI now matches against your actual YNAB categories and payees!
- * - Categories are matched exactly or left blank if uncertain
- * - Payees are fuzzy-matched against existing payees
- *
- * Free tier: 15 requests/minute, 1 million tokens/day
- * More than enough for personal use!
+ * Free tier: 15 requests/minute, 1 million tokens/day (more than enough for personal use)
  */
 
-// ═══════════════════════════════════════════════════════════════════════════
-// TYPES
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * The structured response we expect from Gemini.
- * This is what the LLM will parse from the SMS.
- */
+// The structured response from Gemini
 export interface GeminiParsedSms {
-    // Is this an actual financial transaction? (not a promo, balance check, or conversation)
     is_transaction: boolean;
-
-    // Explanation of why this is/isn't a transaction (helpful for debugging)
     reason: string;
-
-    // Transaction amount (e.g., 100.50) — null if not a transaction
     amount: number | null;
-
-    // Direction of money flow: "inflow" (received) or "outflow" (sent/paid)
     direction: "inflow" | "outflow" | null;
-
-    // Payee name — should match an existing YNAB payee if possible, or be a new name
     payee: string | null;
-
-    // Whether the payee is a new payee (not in existing YNAB payees)
     is_new_payee: boolean;
-
-    // Category name — must EXACTLY match one of the provided YNAB categories, or null
     category: string | null;
-
-    // Clean, human-friendly memo for YNAB
     memo: string | null;
-
-    // Transaction reference ID (e.g., "MP251230.1955.Z13962", "001271716055")
-    // Used to link fee transactions back to the main transaction
     transaction_ref: string | null;
-
-    // Type of transfer — used for fee calculation
-    // "same_network" = Airtel→Airtel, MTN→MTN (person-to-person same provider)
-    // "cross_network" = Airtel→MTN, etc. (different mobile money networks)
-    // "to_bank" = Mobile money → Bank account
-    // "to_mobile" = Bank → Mobile money (e.g., ABSA to Airtel)
-    // "withdrawal" = Cash out at agent or ATM
-    // "airtime" = Airtime/data purchase
-    // "bill_payment" = Utility bills, merchants
-    // "unknown" = Can't determine
     transfer_type:
         | "same_network"
         | "cross_network"
@@ -72,83 +26,48 @@ export interface GeminiParsedSms {
         | "withdrawal"
         | "airtime"
         | "bill_payment"
+        | "pos"
         | "unknown"
         | null;
-
-    // Is this a follow-up/confirmation SMS for a previous transaction?
-    // TRUE = This SMS provides additional details (phone number, ref ID) but no amount
-    // Examples: ABSA "ZECHL payment accepted" SMS, payment confirmations
-    // When TRUE, this should be correlated with a recent primary transaction
-    is_follow_up: boolean;
-
-    // Recipient phone number extracted from SMS (for determining transfer type)
-    // Format: Just the digits, e.g., "260770284890"
-    // Used to determine if transfer was to mobile (phone number) vs to bank
-    recipient_phone: string | null;
-
-    // Account ending mentioned in SMS (last 4 digits)
-    // Used for correlating multi-SMS transactions
-    account_ending: string | null;
 }
 
-/**
- * Result of calling the Gemini API.
- */
 export interface GeminiResult {
     success: boolean;
     parsed?: GeminiParsedSms;
     error?: string;
-    raw_response?: string; // Raw response for debugging
+    raw_response?: string;
 }
 
-/**
- * Context passed to the AI for better matching.
- */
 export interface AiContext {
-    categories: string[]; // User's YNAB category names
-    payees: string[]; // User's YNAB payee names
-    receivedAt?: string; // When the SMS was received (ISO format, used as fallback time)
+    categories: string[];
+    payees: string[];
+    receivedAt?: string;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// GEMINI API CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Using Gemini 2.0 Flash — stable, fast, and reliable
-// All Gemini models have generous FREE tiers (input & output free of charge)
-// Options (all free): gemini-2.0-flash (stable), gemini-2.5-flash, gemini-2.5-pro
+// Gemini API config
 const GEMINI_MODEL = "gemini-2.0-flash";
 const GEMINI_API_URL =
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PROMPT TEMPLATE
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
- * Builds the prompt to send to Gemini.
- * Includes the user's actual YNAB categories and payees for matching.
+ * Builds the prompt for Gemini with user's YNAB data.
  */
 function buildPrompt(smsText: string, context: AiContext): string {
-    // Limit lists to avoid token limits (take first 100 of each)
     const categoryList = context.categories.slice(0, 100).join(", ");
     const payeeList = context.payees.slice(0, 200).join(", ");
 
-    // Extract time from receivedAt and convert to Zambia timezone (CAT = UTC+2)
-    // ISO format: "2025-12-31T15:56:14.709Z" → local time "17:56"
+    // Convert receivedAt to Zambia timezone (CAT = UTC+2)
     let fallbackTime = "";
     if (context.receivedAt) {
         try {
             const date = new Date(context.receivedAt);
-            // Add 2 hours for Zambia (Central Africa Time = UTC+2)
-            const zambiaOffset = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+            const zambiaOffset = 2 * 60 * 60 * 1000;
             const localDate = new Date(date.getTime() + zambiaOffset);
-            // Extract HH:MM
             const hours = String(localDate.getUTCHours()).padStart(2, "0");
             const minutes = String(localDate.getUTCMinutes()).padStart(2, "0");
             fallbackTime = `${hours}:${minutes}`;
         } catch {
-            // If parsing fails, leave empty
+            // Ignore parsing errors
         }
     }
 
@@ -166,7 +85,7 @@ RULES:
 
 1. is_transaction:
    - TRUE only for real money movements (sent, received, paid, withdrawn, deposited, credited, debited, purchased, top-up)
-   - FALSE for: balance checks, promotions ("WIN ZMW 5,000!"), OTPs, conversations, loan offers
+   - FALSE for: balance checks, promotions, OTPs, conversations, loan offers
 
 2. amount: Extract the TRANSACTION amount, NOT the remaining balance
 
@@ -175,84 +94,52 @@ RULES:
    - "outflow" = money sent, paid, withdrawn, purchased, debited
 
 4. payee:
-   - Extract the FULL person/business name ONLY if it is EXPLICITLY mentioned in the SMS
-   - Do NOT guess or infer a payee — if the SMS doesn't name who the transaction was with, set payee to null
-   - Do NOT abbreviate names (e.g., keep "MISHECK MKANDAWIRE", not "M. Mkandawire")
-   - Check if the extracted name matches an existing payee from the list above (fuzzy match OK)
-   - If MATCHED: set payee to the EXACT name from the payee list, set is_new_payee = false
-   - If NOT MATCHED: set payee to the FULL name you extracted (for memo reference), set is_new_payee = true
-   - If NO payee mentioned in SMS: set payee to null, set is_new_payee = false
-   - IMPORTANT: Generic bank messages like "debited from your account" without naming the recipient → payee = null
+   - Extract the FULL person/business name ONLY if EXPLICITLY mentioned in the SMS
+   - Do NOT guess or infer a payee — if not named, set payee to null
+   - Do NOT abbreviate names
+   - Check if it matches an existing payee from the list (fuzzy match OK)
+   - If MATCHED: set payee to the EXACT name from the payee list, is_new_payee = false
+   - If NOT MATCHED: set payee to the FULL name you extracted, is_new_payee = true
+   - If NO payee mentioned: payee = null, is_new_payee = false
 
 5. category:
    - MUST exactly match one of the categories listed above (case-insensitive OK)
-   - If unsure, set to null (user will categorize manually)
-   - Common mappings: airtime/data → look for "Airtime" or "Data" category, groceries → "Groceries", etc.
+   - If unsure, set to null
+   - Generic bank debits/credits → category = null
+   - Transfers between accounts → category = null
+   - Only categorize when CONFIDENT about the purchase type
 
-6. memo: Detailed but organized (max 200 chars)
-   - Format: "[Action] [Full Payee Name] | [HH:MM] | Ref: [ID] | Bal: [Balance]"
-   - Use the FULL payee name (do NOT abbreviate, e.g., "MISHECK MKANDAWIRE" not "M. Mkandawire")
-   - ALWAYS include transaction TIME (HH:MM format like "15:44") in the memo
-   - Look for time in SMS first (e.g., "15:44", "11:42 AM", "at 14:30")
-   - If NO time found in SMS text, use EXACTLY this fallback: ${fallbackTime}
-   - Include reference IDs and balance if present
-   - Do NOT include dates in the memo, only TIME
-   - Do NOT include promotional text
+6. memo: Format as "[Action] [Payee] | [HH:MM] | Ref: [ID] | Bal: [Balance]"
+   - Use the FULL payee name (do NOT abbreviate)
+   - ALWAYS include transaction TIME (HH:MM format)
+   - Look for time in SMS first, if not found use: ${fallbackTime}
+   - Do NOT include dates, only TIME
 
 7. transaction_ref: Extract the transaction/reference ID if present
-   - Look for patterns like "TID: XX123456", "Ref: PP260101.0959.F47740", "Txn ID: 001234"
-   - Return ONLY the ID part (e.g., "MP251230.1955.Z13962"), not the label
-   - This is used to link fee transactions to the main transaction
+   - Look for patterns like "TID:", "Ref:", "Txn ID:"
+   - Return ONLY the ID part, not the label
 
-8. transfer_type: Determine what kind of transfer this is (for fee calculation):
-   - "same_network" = Person-to-person on same provider (Airtel→Airtel, MTN→MTN)
-   - "cross_network" = Transfer to different mobile money (Airtel→MTN, MTN→Zamtel)
-   - "to_bank" = Mobile money → Bank account transfer
-   - "to_mobile" = Bank → Mobile money transfer (e.g., ABSA to Airtel)
+8. transfer_type: Determine the type for fee calculation:
+   - "same_network" = Same provider (Airtel→Airtel, MTN→MTN)
+   - "cross_network" = Different mobile money (Airtel→MTN)
+   - "to_bank" = Mobile money → Bank account
+   - "to_mobile" = Bank → Mobile money
    - "withdrawal" = Cash withdrawal at agent or ATM
    - "airtime" = Airtime or data purchase
-   - "bill_payment" = Utility bills, merchant payments, till numbers
-   - "unknown" = Can't determine the type
-   
-   ZAMBIAN PHONE PREFIX RULES (use to determine same_network vs cross_network):
-   - Airtel numbers: start with 097, 077, 97, 77
-   - MTN numbers: start with 096, 076, 96, 76
-   - Zamtel numbers: start with 095, 075, 95, 75
-   
-   Examples:
-   - SMS from Airtel + recipient phone 978902730 (starts with 97) → same_network
-   - SMS from Airtel + recipient phone 966123456 (starts with 96) → cross_network (to MTN)
-   - SMS from MTN + recipient phone 975123456 (starts with 97) → cross_network (to Airtel)
-   
-   Other hints: "top-up" = airtime, "agent" or "withdraw" = withdrawal, "till" = bill_payment
+   - "bill_payment" = Utility bills, merchants
+   - "pos" = Point of sale / debit card purchase (look for "POS" in SMS)
+   - "unknown" = Can't determine
 
-9. is_follow_up: Is this a follow-up/confirmation SMS for a previous transaction?
-   - TRUE = This SMS provides additional details (phone number, ref ID) but NO amount
-   - Examples: ABSA "ZECHL payment accepted" SMS, bank payment confirmations
-   - FALSE = This is a primary transaction SMS with an amount
-   - When TRUE, is_transaction should also be TRUE (it's still transaction-related)
+   ZAMBIAN PHONE PREFIXES:
+   - Airtel: 097, 077, 97, 77
+   - MTN: 096, 076, 96, 76
+   - Zamtel: 095, 075, 95, 75
 
-10. recipient_phone: Extract the recipient's phone number if present
-    - Look for "Cust Ref", "to", "recipient" followed by a phone number
-    - Extract just the digits (e.g., "260770284890" from "Cust Ref 260770284890")
-    - Used to determine if transfer was to mobile money (triggers to_mobile fee)
-
-11. account_ending: Extract the last 4 digits of bank account if mentioned
-    - Look for "account ending XXXX" or "account *XXXX"
-    - Return just the 4 digits (e.g., "4983")
-    - Used to correlate multiple SMS about the same transaction
-
-MULTI-SMS TRANSACTIONS (IMPORTANT):
-Some banks like ABSA send MULTIPLE SMS for ONE transaction:
-- SMS1: "ZMW 5,000 debited from account ending 4983" (has amount, no recipient details)
-- SMS2: "ZECHL payment accepted. Cust Ref 260770284890" (has phone number, no amount)
-
-For SMS2-type messages:
-- Set is_transaction = true (it IS transaction-related)
-- Set is_follow_up = true (it's providing additional details)
-- Set amount = null (amount was in SMS1)
-- Extract recipient_phone (e.g., "260770284890")
-- Use recipient_phone to determine transfer_type (if starts with 097/077/96/76 → to_mobile)
+   DETECTION HINTS:
+   - "POS" → pos
+   - "ATM" or "withdraw" → withdrawal
+   - "top-up" → airtime
+   - "till" → bill_payment
 
 SMS MESSAGE:
 """
@@ -272,63 +159,36 @@ Respond with JSON only:
   "category": "exact category name from list" or null,
   "memo": "clean description" or null,
   "transaction_ref": "reference ID" or null,
-  "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "unknown" or null,
-  "is_follow_up": true/false,
-  "recipient_phone": "phone digits" or null,
-  "account_ending": "4 digits" or null
+  "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "pos" | "unknown" or null
 }`;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MAIN API FUNCTION
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Parses an SMS message using Gemini AI.
- * Matches against the user's actual YNAB categories and payees.
- *
- * @param smsText - The full SMS message text
- * @param apiKey - Your Gemini API key (from Google AI Studio)
- * @param context - User's YNAB categories and payees for matching
- * @returns GeminiResult with parsed data or error
  */
 export async function parseWithGemini(
     smsText: string,
     apiKey: string,
     context: AiContext,
 ): Promise<GeminiResult> {
-    // Build the request payload for Gemini API
     const requestBody = {
-        contents: [
-            {
-                parts: [
-                    {
-                        text: buildPrompt(smsText, context),
-                    },
-                ],
-            },
-        ],
-        // Configure generation parameters for consistent JSON output
+        contents: [{ parts: [{ text: buildPrompt(smsText, context) }] }],
         generationConfig: {
-            temperature: 0.1, // Low temperature for more deterministic responses
+            temperature: 0.1,
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 2048, // Enough for our JSON response
-            responseMimeType: "application/json", // Force JSON output
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json",
         },
     };
 
     try {
-        // Call the Gemini API
         const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(requestBody),
         });
 
-        // Handle HTTP errors
         if (!response.ok) {
             const errorText = await response.text();
             return {
@@ -339,10 +199,7 @@ export async function parseWithGemini(
             };
         }
 
-        // Parse the Gemini response
         const geminiResponse = await response.json();
-
-        // Extract the text content from Gemini's response structure
         const textContent = geminiResponse.candidates?.[0]?.content?.parts?.[0]
             ?.text;
 
@@ -354,8 +211,7 @@ export async function parseWithGemini(
             };
         }
 
-        // Try to parse the JSON response from Gemini
-        // Sometimes Gemini wraps the JSON in markdown code blocks, so we clean that
+        // Clean markdown code blocks if present
         const cleanedJson = textContent
             .replace(/```json\s*/g, "")
             .replace(/```\s*/g, "")
@@ -364,7 +220,6 @@ export async function parseWithGemini(
         try {
             const parsed: GeminiParsedSms = JSON.parse(cleanedJson);
 
-            // Validate the parsed response has required fields
             if (typeof parsed.is_transaction !== "boolean") {
                 return {
                     success: false,
@@ -373,31 +228,11 @@ export async function parseWithGemini(
                 };
             }
 
-            // Default is_new_payee to true if not provided
             if (parsed.is_new_payee === undefined) {
                 parsed.is_new_payee = true;
             }
 
-            // Default is_follow_up to false if not provided
-            if (parsed.is_follow_up === undefined) {
-                parsed.is_follow_up = false;
-            }
-
-            // Default recipient_phone to null if not provided
-            if (parsed.recipient_phone === undefined) {
-                parsed.recipient_phone = null;
-            }
-
-            // Default account_ending to null if not provided
-            if (parsed.account_ending === undefined) {
-                parsed.account_ending = null;
-            }
-
-            return {
-                success: true,
-                parsed,
-                raw_response: textContent,
-            };
+            return { success: true, parsed, raw_response: textContent };
         } catch (parseError) {
             return {
                 success: false,
@@ -413,16 +248,8 @@ export async function parseWithGemini(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
- * Converts an amount to YNAB milliunits.
- * YNAB uses 1/1000 of the currency unit (e.g., ZMW 10.00 → 10000).
- *
- * @param amount - Amount in normal units (e.g., 10.50)
- * @returns Amount in milliunits (e.g., 10500)
+ * Converts an amount to YNAB milliunits (1000 = ZMW 1.00).
  */
 export function toMilliunits(amount: number): number {
     return Math.round(amount * 1000);
@@ -430,9 +257,6 @@ export function toMilliunits(amount: number): number {
 
 /**
  * Gets the sign for a transaction direction.
- *
- * @param direction - "inflow" or "outflow"
- * @returns 1 for inflow (positive), -1 for outflow (negative)
  */
 export function getSign(direction: "inflow" | "outflow" | null): 1 | -1 {
     return direction === "inflow" ? 1 : -1;

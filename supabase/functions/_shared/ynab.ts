@@ -1,49 +1,26 @@
-// Base URL for all YNAB API calls; keep it centralized so we don't duplicate strings.
+/**
+ * YNAB API CLIENT — Minimal wrapper for YNAB API calls.
+ */
+
 const YNAB_BASE_URL = "https://api.youneedabudget.com/v1";
 
-// YNAB only accepts these clearing states.
 export type YnabClearingStatus = "cleared" | "uncleared" | "reconciled";
 
-// Minimal transaction shape we need to send to YNAB.
 export interface YnabTransaction {
   account_id: string;
-  date: string; // ISO yyyy-mm-dd
-  amount: number; // milliunits (e.g., ZMW 12.34 => 12340)
+  date: string;
+  amount: number;
   payee_id?: string;
   payee_name?: string;
   memo?: string;
   cleared?: YnabClearingStatus;
   approved?: boolean;
-  import_id?: string; // use a deterministic value for dedupe
+  import_id?: string;
 }
 
 export interface YnabClientOptions {
   token: string;
   budgetId?: string;
-}
-
-interface YnabListBudgetsResponse {
-  data: { budgets: any[] };
-}
-
-interface YnabListAccountsResponse {
-  data: { accounts: any[] };
-}
-
-interface YnabCreateTransactionsResponse {
-  data: { transaction_ids: string[]; duplicate_import_ids: string[] };
-}
-
-interface YnabCreateAccountResponse {
-  data: { account: any };
-}
-
-interface YnabListCategoriesResponse {
-  data: { category_groups: any[] };
-}
-
-interface YnabListPayeesResponse {
-  data: { payees: any[] };
 }
 
 interface YnabCreateAccountInput {
@@ -56,16 +33,12 @@ interface YnabCreateAccountInput {
     | "lineOfCredit"
     | "otherAsset"
     | "otherLiability";
-  balance?: number; // milliunits; defaults to 0
+  balance?: number;
 }
 
 export function createYnabClient({ token, budgetId }: YnabClientOptions) {
-  // Fail fast if the token is missing so we avoid confusing network errors later.
-  if (!token) {
-    throw new Error("YNAB token missing");
-  }
+  if (!token) throw new Error("YNAB token missing");
 
-  // Tiny helper that attaches auth headers and surfaces API errors with text body.
   const ynabFetch = async <T>(
     path: string,
     init: RequestInit = {},
@@ -88,56 +61,52 @@ export function createYnabClient({ token, budgetId }: YnabClientOptions) {
   };
 
   return {
-    // Lists all budgets for the user (useful to grab budget IDs).
-    listBudgets: () => ynabFetch<YnabListBudgetsResponse>("/budgets"),
+    listBudgets: () => ynabFetch<{ data: { budgets: any[] } }>("/budgets"),
 
-    // Lists accounts for a specific budget (needed to map SMS senders to accounts).
     listAccounts: (explicitBudgetId?: string) => {
       const id = explicitBudgetId ?? budgetId;
       if (!id) throw new Error("budgetId required");
-      return ynabFetch<YnabListAccountsResponse>(`/budgets/${id}/accounts`);
-    },
-
-    // Lists categories for a specific budget (needed to auto-assign categories).
-    listCategories: (explicitBudgetId?: string) => {
-      const id = explicitBudgetId ?? budgetId;
-      if (!id) throw new Error("budgetId required");
-      return ynabFetch<YnabListCategoriesResponse>(`/budgets/${id}/categories`);
-    },
-
-    // Lists payees for a specific budget (needed for AI payee matching).
-    listPayees: (explicitBudgetId?: string) => {
-      const id = explicitBudgetId ?? budgetId;
-      if (!id) throw new Error("budgetId required");
-      return ynabFetch<YnabListPayeesResponse>(`/budgets/${id}/payees`);
-    },
-
-    // Creates one transaction; we wrap it in an array because YNAB expects a list.
-    createTransaction: (tx: YnabTransaction, explicitBudgetId?: string) => {
-      const id = explicitBudgetId ?? budgetId;
-      if (!id) throw new Error("budgetId required");
-      return ynabFetch<YnabCreateTransactionsResponse>(
-        `/budgets/${id}/transactions`,
-        {
-          method: "POST",
-          body: JSON.stringify({ transactions: [tx] }),
-        },
+      return ynabFetch<{ data: { accounts: any[] } }>(
+        `/budgets/${id}/accounts`,
       );
     },
 
-    // Creates an account (e.g., "Unknown Imports") so we have a safe fallback inbox.
+    listCategories: (explicitBudgetId?: string) => {
+      const id = explicitBudgetId ?? budgetId;
+      if (!id) throw new Error("budgetId required");
+      return ynabFetch<{ data: { category_groups: any[] } }>(
+        `/budgets/${id}/categories`,
+      );
+    },
+
+    listPayees: (explicitBudgetId?: string) => {
+      const id = explicitBudgetId ?? budgetId;
+      if (!id) throw new Error("budgetId required");
+      return ynabFetch<{ data: { payees: any[] } }>(`/budgets/${id}/payees`);
+    },
+
+    createTransaction: (tx: YnabTransaction, explicitBudgetId?: string) => {
+      const id = explicitBudgetId ?? budgetId;
+      if (!id) throw new Error("budgetId required");
+      return ynabFetch<
+        { data: { transaction_ids: string[]; duplicate_import_ids: string[] } }
+      >(
+        `/budgets/${id}/transactions`,
+        { method: "POST", body: JSON.stringify({ transactions: [tx] }) },
+      );
+    },
+
     createAccount: (
       account: YnabCreateAccountInput,
       explicitBudgetId?: string,
     ) => {
       const id = explicitBudgetId ?? budgetId;
       if (!id) throw new Error("budgetId required");
-      const payload = {
-        account: { ...account, balance: account.balance ?? 0 },
-      };
-      return ynabFetch<YnabCreateAccountResponse>(`/budgets/${id}/accounts`, {
+      return ynabFetch<{ data: { account: any } }>(`/budgets/${id}/accounts`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          account: { ...account, balance: account.balance ?? 0 },
+        }),
       });
     },
   };
