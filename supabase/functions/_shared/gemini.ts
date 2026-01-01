@@ -74,6 +74,21 @@ export interface GeminiParsedSms {
         | "bill_payment"
         | "unknown"
         | null;
+
+    // Is this a follow-up/confirmation SMS for a previous transaction?
+    // TRUE = This SMS provides additional details (phone number, ref ID) but no amount
+    // Examples: ABSA "ZECHL payment accepted" SMS, payment confirmations
+    // When TRUE, this should be correlated with a recent primary transaction
+    is_follow_up: boolean;
+
+    // Recipient phone number extracted from SMS (for determining transfer type)
+    // Format: Just the digits, e.g., "260770284890"
+    // Used to determine if transfer was to mobile (phone number) vs to bank
+    recipient_phone: string | null;
+
+    // Account ending mentioned in SMS (last 4 digits)
+    // Used for correlating multi-SMS transactions
+    account_ending: string | null;
 }
 
 /**
@@ -211,6 +226,34 @@ RULES:
    
    Other hints: "top-up" = airtime, "agent" or "withdraw" = withdrawal, "till" = bill_payment
 
+9. is_follow_up: Is this a follow-up/confirmation SMS for a previous transaction?
+   - TRUE = This SMS provides additional details (phone number, ref ID) but NO amount
+   - Examples: ABSA "ZECHL payment accepted" SMS, bank payment confirmations
+   - FALSE = This is a primary transaction SMS with an amount
+   - When TRUE, is_transaction should also be TRUE (it's still transaction-related)
+
+10. recipient_phone: Extract the recipient's phone number if present
+    - Look for "Cust Ref", "to", "recipient" followed by a phone number
+    - Extract just the digits (e.g., "260770284890" from "Cust Ref 260770284890")
+    - Used to determine if transfer was to mobile money (triggers to_mobile fee)
+
+11. account_ending: Extract the last 4 digits of bank account if mentioned
+    - Look for "account ending XXXX" or "account *XXXX"
+    - Return just the 4 digits (e.g., "4983")
+    - Used to correlate multiple SMS about the same transaction
+
+MULTI-SMS TRANSACTIONS (IMPORTANT):
+Some banks like ABSA send MULTIPLE SMS for ONE transaction:
+- SMS1: "ZMW 5,000 debited from account ending 4983" (has amount, no recipient details)
+- SMS2: "ZECHL payment accepted. Cust Ref 260770284890" (has phone number, no amount)
+
+For SMS2-type messages:
+- Set is_transaction = true (it IS transaction-related)
+- Set is_follow_up = true (it's providing additional details)
+- Set amount = null (amount was in SMS1)
+- Extract recipient_phone (e.g., "260770284890")
+- Use recipient_phone to determine transfer_type (if starts with 097/077/96/76 → to_mobile)
+
 SMS MESSAGE:
 """
 ${smsText}
@@ -229,7 +272,10 @@ Respond with JSON only:
   "category": "exact category name from list" or null,
   "memo": "clean description" or null,
   "transaction_ref": "reference ID" or null,
-  "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "unknown" or null
+  "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "unknown" or null,
+  "is_follow_up": true/false,
+  "recipient_phone": "phone digits" or null,
+  "account_ending": "4 digits" or null
 }`;
 }
 
@@ -330,6 +376,21 @@ export async function parseWithGemini(
             // Default is_new_payee to true if not provided
             if (parsed.is_new_payee === undefined) {
                 parsed.is_new_payee = true;
+            }
+
+            // Default is_follow_up to false if not provided
+            if (parsed.is_follow_up === undefined) {
+                parsed.is_follow_up = false;
+            }
+
+            // Default recipient_phone to null if not provided
+            if (parsed.recipient_phone === undefined) {
+                parsed.recipient_phone = null;
+            }
+
+            // Default account_ending to null if not provided
+            if (parsed.account_ending === undefined) {
+                parsed.account_ending = null;
             }
 
             return {

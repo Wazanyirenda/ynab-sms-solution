@@ -47,6 +47,12 @@ import {
   senderToProvider,
   TransferType,
 } from "../_shared/fee-calculator.ts";
+import {
+  findMatchingTransaction,
+  isSupabaseConfigured,
+  markFeeApplied,
+  storeSmsContext,
+} from "../_shared/supabase-client.ts";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ENVIRONMENT VARIABLES
@@ -173,6 +179,12 @@ interface YnabResult {
     payee: string | null; // Fee payee (e.g., "Absa")
     transaction_id?: string; // YNAB transaction ID for the SMS fee
   };
+  // Correlation info (for multi-SMS transactions like ABSA)
+  correlation?: {
+    is_follow_up: boolean; // TRUE if this was a follow-up SMS
+    correlated_with?: string; // ID of the primary transaction it was linked to
+    fee_applied_to_primary?: boolean; // TRUE if we applied transfer fee to original txn
+  };
   // AI parsing output for debugging
   ai_parsed?: GeminiParsedSms;
   ai_raw?: string;
@@ -265,6 +277,165 @@ async function processWithYnab(params: {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Handle follow-up SMS (e.g., ABSA SMS2 with phone number but no amount).
+  // These provide additional details that help determine transfer type.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (aiParsed.is_follow_up) {
+    console.log("Follow-up SMS detected, attempting correlation...");
+
+    // Only try correlation if Supabase is configured
+    if (!isSupabaseConfigured()) {
+      console.log("Supabase not configured - cannot correlate follow-up SMS");
+      return {
+        sent: false,
+        reason: "Follow-up SMS cannot be correlated (Supabase not configured)",
+        ai_parsed: aiParsed,
+        ai_raw: geminiResult.raw_response,
+      };
+    }
+
+    // Try to find the primary transaction (usually the first SMS with amount)
+    const primaryTxn = await findMatchingTransaction(sender);
+
+    if (!primaryTxn) {
+      console.log("No recent primary transaction found to correlate with");
+      return {
+        sent: false,
+        reason: "Follow-up SMS but no primary transaction found to correlate",
+        ai_parsed: aiParsed,
+        ai_raw: geminiResult.raw_response,
+      };
+    }
+
+    console.log(
+      `Found primary transaction: K${primaryTxn.amount} from ${primaryTxn.received_at}`,
+    );
+
+    // Determine transfer type from recipient phone number (if available)
+    let transferType = aiParsed.transfer_type;
+    if (
+      (!transferType || transferType === "unknown") &&
+      aiParsed.recipient_phone
+    ) {
+      transferType = determineTransferTypeFromPhone(aiParsed.recipient_phone);
+      console.log(
+        `Determined transfer type from phone ${aiParsed.recipient_phone}: ${transferType}`,
+      );
+    }
+
+    // If we can determine transfer type, create the fee transaction
+    if (
+      transferType &&
+      transferType !== "unknown" &&
+      primaryTxn.ynab_account_id
+    ) {
+      const provider = senderToProvider(sender);
+      const feeResult = calculateFee(
+        provider,
+        transferType as TransferType,
+        primaryTxn.amount ?? 0,
+      );
+
+      if (feeResult.fee && feeResult.fee > 0) {
+        console.log(
+          `Creating correlated fee: K${feeResult.fee} for ${provider}/${transferType}`,
+        );
+
+        // Initialize YNAB client for fee creation
+        const client = createYnabClient({
+          token: ynabToken!,
+          budgetId: ynabBudgetId!,
+        });
+
+        // Look up category ID for fees
+        const feeCategoryId = feeResult.category
+          ? getCategoryIdByName(feeResult.category)
+          : undefined;
+
+        // Look up payee ID for fee provider
+        const feePayeeId = feeResult.payee
+          ? getPayeeIdByName(feeResult.payee)
+          : undefined;
+
+        // Create unique fee import ID
+        const feeImportId = primaryTxn.import_id?.replace(/^sms:/, "xfr:") ??
+          `xfr:${Date.now()}`;
+
+        const feeTransaction: Record<string, unknown> = {
+          account_id: primaryTxn.ynab_account_id,
+          date: receivedAtIso.slice(0, 10),
+          amount: -toMilliunits(feeResult.fee),
+          memo: `Transfer Fee (${transferType}): Ref: ${
+            primaryTxn.import_id ?? "correlated"
+          }`,
+          cleared: "cleared",
+          approved: false,
+          import_id: feeImportId,
+        };
+
+        if (feePayeeId) feeTransaction.payee_id = feePayeeId;
+        if (feeCategoryId) feeTransaction.category_id = feeCategoryId;
+
+        try {
+          const feeRes = await client.createTransaction(feeTransaction as any);
+
+          // Mark primary transaction as fee applied
+          if (primaryTxn.id) {
+            await markFeeApplied(primaryTxn.id);
+          }
+
+          return {
+            sent: true,
+            reason: "Correlated fee created from follow-up SMS",
+            fee: {
+              amount: feeResult.fee,
+              payee: feeResult.payee,
+              transaction_id: feeRes.data.transaction_ids?.[0],
+              transfer_type: transferType,
+            },
+            correlation: {
+              is_follow_up: true,
+              correlated_with: primaryTxn.id,
+              fee_applied_to_primary: true,
+            },
+            ai_parsed: aiParsed,
+            ai_raw: geminiResult.raw_response,
+          };
+        } catch (feeErr) {
+          console.error("Failed to create correlated fee:", feeErr);
+          return {
+            sent: false,
+            reason: "Failed to create correlated fee transaction",
+            detail: String(feeErr),
+            correlation: { is_follow_up: true, correlated_with: primaryTxn.id },
+            ai_parsed: aiParsed,
+            ai_raw: geminiResult.raw_response,
+          };
+        }
+      } else {
+        console.log(`No fee configured for ${provider}/${transferType}`);
+        return {
+          sent: false,
+          reason:
+            "Follow-up correlated but no fee configured for transfer type",
+          correlation: { is_follow_up: true, correlated_with: primaryTxn.id },
+          ai_parsed: aiParsed,
+          ai_raw: geminiResult.raw_response,
+        };
+      }
+    }
+
+    // Follow-up without actionable data
+    return {
+      sent: false,
+      reason: "Follow-up SMS processed but no action needed",
+      correlation: { is_follow_up: true, correlated_with: primaryTxn.id },
+      ai_parsed: aiParsed,
+      ai_raw: geminiResult.raw_response,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Validate we have the required transaction data.
   // ─────────────────────────────────────────────────────────────────────────
   if (aiParsed.amount === null || aiParsed.amount === undefined) {
@@ -332,11 +503,13 @@ async function processWithYnab(params: {
 
   // ─────────────────────────────────────────────────────────────────────────
   // Generate import ID for deduplication.
+  // Uses FULL timestamp (not just date) so same-amount transfers at different
+  // times get unique IDs. This fixes Absa's generic SMS (no transaction ID).
   // ─────────────────────────────────────────────────────────────────────────
   const amountMilli = toMilliunits(aiParsed.amount);
   const importId = await makeImportId({
     sender,
-    date: receivedAtIso.slice(0, 10),
+    date: receivedAtIso, // Full timestamp, not just date!
     amountMilli,
     text,
   });
@@ -376,6 +549,33 @@ async function processWithYnab(params: {
   // ─────────────────────────────────────────────────────────────────────────
   try {
     const res = await client.createTransaction(transaction as any);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Store SMS context for potential correlation with follow-up messages.
+    // This is used for multi-SMS transactions (e.g., ABSA sends 2 SMS per txn).
+    // The follow-up SMS will find this record and create the transfer fee.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (isSupabaseConfigured()) {
+      try {
+        await storeSmsContext({
+          sender,
+          sms_text: text,
+          received_at: receivedAtIso,
+          amount: aiParsed.amount,
+          direction: aiParsed.direction,
+          account_ending: aiParsed.account_ending ?? null,
+          ynab_transaction_id: res.data.transaction_ids?.[0] ?? null,
+          ynab_account_id: routing.accountId ?? null,
+          import_id: importId,
+          is_primary: true,
+          fee_applied: false,
+        });
+        console.log("SMS context stored for potential correlation");
+      } catch (storeErr) {
+        // Log but don't fail - correlation is optional
+        console.error("Failed to store SMS context:", storeErr);
+      }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Create fee transaction (if applicable).
@@ -588,4 +788,56 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * Determines the transfer type based on Zambian phone number prefixes.
+ * Used when correlating follow-up SMS to determine if it's a mobile money transfer.
+ *
+ * Zambian Phone Prefix Rules:
+ * - Airtel: 097, 077, 97, 77
+ * - MTN: 096, 076, 96, 76
+ * - Zamtel: 095, 075, 95, 75
+ *
+ * @param phone - Phone number string (e.g., "260770284890", "0770284890", "770284890")
+ * @returns Transfer type: "to_mobile" if it's a mobile money number, "unknown" otherwise
+ */
+function determineTransferTypeFromPhone(
+  phone: string,
+): "to_mobile" | "same_network" | "cross_network" | "unknown" {
+  // Clean up phone number - remove spaces, dashes, country code prefix
+  const cleaned = phone.replace(/[\s-]/g, "").replace(/^260/, "");
+
+  // Check if it starts with a mobile money prefix
+  // Leading 0 is optional, so check both with and without it
+  const mobileMoneyPrefixes = [
+    // Airtel
+    "097",
+    "077",
+    "97",
+    "77",
+    // MTN
+    "096",
+    "076",
+    "96",
+    "76",
+    // Zamtel
+    "095",
+    "075",
+    "95",
+    "75",
+  ];
+
+  // Check if the phone matches any mobile money prefix
+  const isMobileNumber = mobileMoneyPrefixes.some((prefix) =>
+    cleaned.startsWith(prefix)
+  );
+
+  if (isMobileNumber) {
+    // Bank → Mobile Money transfer (e.g., ABSA to Airtel/MTN/Zamtel)
+    return "to_mobile";
+  }
+
+  // Not a recognizable mobile money number
+  return "unknown";
 }

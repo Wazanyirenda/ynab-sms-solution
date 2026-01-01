@@ -45,23 +45,31 @@ export function normalizeDate(input?: string): string {
  *
  * YNAB uses import_id to prevent duplicate transactions. We hash:
  * - Sender name
- * - Date (YYYY-MM-DD)
+ * - Full timestamp (ISO format with time, not just date!)
  * - Amount in milliunits
  * - Full SMS text
  *
- * This ensures the same SMS always produces the same import ID,
- * even if processed multiple times.
+ * IMPORTANT: We use the full timestamp (including time) because some banks
+ * like Absa send generic SMS without unique transaction IDs. If we only used
+ * the date (YYYY-MM-DD), two K100 transfers on the same day would have
+ * identical hashes and YNAB would reject the second as a "duplicate".
+ *
+ * With full timestamp:
+ * - Two transfers at 18:05 and 18:09 → Different import_id → Both created ✅
+ * - Same SMS forwarded twice at 18:09:07 → Same import_id → Deduplicated ✅
  *
  * @param input - Components to hash
  * @returns Import ID string (e.g., "sms:a1b2c3d4...")
  */
 export async function makeImportId(input: {
   sender: string;
-  date: string;
+  date: string; // Full ISO timestamp (e.g., "2026-01-01T18:09:07.000Z")
   amountMilli: number;
   text: string;
 }): Promise<string> {
   const encoder = new TextEncoder();
+  // Include full timestamp for uniqueness — allows same-amount transactions
+  // at different times to be distinct while deduplicating true duplicates
   const raw =
     `${input.sender}|${input.date}|${input.amountMilli}|${input.text}`;
 

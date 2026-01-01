@@ -39,6 +39,7 @@ Gemini AI understands **context**:
 - 🔄 **Deduplication** — Same SMS won't create duplicate transactions
 - ✋ **Manual approval** — Transactions need your approval in YNAB
 - 💸 **Automatic fee tracking** — Creates separate fee transactions linked to the original
+- 🔗 **Multi-SMS correlation** — Handles banks that send multiple SMS per transaction (ABSA)
 
 ## Supported banks/services
 
@@ -63,11 +64,14 @@ supabase/
 │   └── _shared/
 │       ├── gemini.ts         # 🤖 Gemini AI client (SMS parsing)
 │       ├── fee-calculator.ts # 💸 Transaction fee calculation
+│       ├── supabase-client.ts# 🔗 Multi-SMS correlation (ABSA)
 │       ├── config.ts         # ⚙️ Sender→account mappings (edit this!)
 │       ├── parsers.ts        # Utility functions (date, import ID)
 │       ├── routing.ts        # Account routing logic
 │       ├── ynab.ts           # YNAB API client
 │       └── ynab-lookup.ts    # Account/Category/Payee lookup & caching
+├── migrations/
+│   └── 20260101000000_create_sms_context.sql  # SMS correlation table
 └── config.toml               # Supabase project config
 ```
 
@@ -477,6 +481,44 @@ Some banks charge per SMS notification. This is **separate from transaction fees
 When an ABSA transaction SMS arrives, the system automatically creates:
 1. **Main transaction** (inflow/outflow)
 2. **SMS notification fee** — K0.50 outflow with memo "SMS Notification Fee: Ref: {txn_id}"
+
+### Multi-SMS Transaction Correlation (ABSA)
+
+Some banks like ABSA send **multiple SMS messages** for a single transaction:
+
+| SMS | Example Content | Contains |
+|-----|-----------------|----------|
+| **SMS1** | "ZMW 5,000.00 debited from account ending 4983" | Amount, direction |
+| **SMS2** | "ZECHL payment accepted. Cust Ref 260770284890" | Phone number (recipient) |
+
+The problem: SMS1 has the amount but doesn't specify if it's a mobile money transfer. SMS2 has the phone number (proving it's a mobile transfer) but no amount.
+
+**Solution: Correlation & Update**
+
+The system stores SMS context in a Supabase database and correlates follow-up SMS:
+
+1. **SMS1 arrives** → Main transaction created → Context stored in `sms_context` table
+2. **SMS2 arrives** → AI detects it's a follow-up (no amount) → Looks up recent primary from same sender
+3. **Phone number analyzed** → Prefix `260770...` indicates Airtel → Transfer type = "to_mobile"
+4. **Fee created** → K10 transfer fee linked to original transaction
+
+#### Requirements
+
+Multi-SMS correlation requires:
+- **Supabase project** with database (the `sms_context` table is auto-created via migration)
+- **SUPABASE_URL** and **SUPABASE_SERVICE_ROLE_KEY** environment variables
+
+If Supabase is not configured, follow-up SMS are logged but cannot apply transfer fees.
+
+#### Database Migration
+
+The migration file `20260101000000_create_sms_context.sql` creates the correlation table automatically when you run:
+
+```bash
+supabase db push
+```
+
+The table auto-cleans records older than 1 hour (only recent context matters).
 
 ### Fee data sources
 
