@@ -7,7 +7,7 @@ Automatically captures transaction SMS messages from Zambian banks and mobile mo
 ## System Architecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Phone["📱 iPhone"]
         SMS["SMS Received"]
         Shortcut["iOS Shortcut"]
