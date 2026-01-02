@@ -282,6 +282,59 @@ The AI analyzes the SMS and returns:
 
 **Note:** Payees are NEVER created automatically. If there's no match, the payee field stays blank.
 
+## Processing Logic
+
+This diagram shows how the system processes each SMS and decides what transactions to create:
+
+```mermaid
+flowchart TD
+    Start([SMS Received]) --> Validate{Valid request?}
+    Validate -->|No| Reject[Return 401/400]
+    Validate -->|Yes| FetchYNAB[Fetch YNAB categories & payees]
+    
+    FetchYNAB --> CallAI[Send SMS to Gemini AI]
+    CallAI --> IsTransaction{Is it a transaction?}
+    
+    IsTransaction -->|No| Skip[Skip - not a transaction]
+    IsTransaction -->|Yes| ExtractData[Extract amount, direction, payee, category]
+    
+    ExtractData --> RouteAccount[Route to YNAB account]
+    RouteAccount --> CreateMain[Create main transaction in YNAB]
+    
+    CreateMain --> CheckDirection{Direction?}
+    
+    CheckDirection -->|Inflow| CheckSMSFee{Provider charges SMS fee?}
+    CheckDirection -->|Outflow| CheckTransferType{Transfer type known?}
+    
+    CheckTransferType -->|Yes| LookupFee[Look up fee from tier table]
+    CheckTransferType -->|No/Unknown| CheckAbsa{Is Absa?}
+    
+    CheckAbsa -->|Yes| CreatePlaceholder[Create K10 placeholder fee]
+    CheckAbsa -->|No| CheckSMSFee
+    
+    LookupFee --> FeeFound{Fee > 0?}
+    FeeFound -->|Yes| CreateFee[Create fee transaction]
+    FeeFound -->|No| CheckSMSFee
+    
+    CreatePlaceholder --> CheckSMSFee
+    CreateFee --> CheckSMSFee
+    
+    CheckSMSFee -->|Yes| CreateSMSFee[Create SMS notification fee]
+    CheckSMSFee -->|No| Done([Return success])
+    
+    CreateSMSFee --> Done
+```
+
+### Decision points explained
+
+| Decision | Logic |
+|----------|-------|
+| **Is it a transaction?** | AI determines if SMS describes real money movement (not promos, OTPs, balance checks) |
+| **Transfer type known?** | AI extracts type: `same_network`, `cross_network`, `to_mobile`, `withdrawal`, `pos`, etc. |
+| **Is Absa?** | Absa SMS doesn't specify transfer type, so we create a K10 placeholder fee for unknown outflows |
+| **Fee > 0?** | Some transfer types are free (e.g., airtime purchases, POS transactions) |
+| **Provider charges SMS fee?** | Currently only Absa charges K0.50 per SMS notification |
+
 ## Transaction Fees
 
 The system automatically creates separate fee transactions for mobile money transfers and bank transactions.
