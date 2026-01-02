@@ -4,13 +4,47 @@ Automatically captures transaction SMS messages from Zambian banks and mobile mo
 
 **Powered by Google Gemini AI** for intelligent SMS parsing — no brittle regex rules!
 
-## How it works
+## System Architecture
 
-1. **iOS Shortcut** triggers when you receive an SMS containing "ZMW"
-2. The Shortcut sends the SMS to your **Supabase Edge Function**
-3. **Gemini AI** analyzes the message to determine if it's a real transaction
-4. If it is, the function extracts amount, direction, payee, and category
-5. The transaction is **posted to YNAB** for your review
+```mermaid
+flowchart LR
+    subgraph Phone["📱 iPhone"]
+        SMS["SMS Received"]
+        Shortcut["iOS Shortcut"]
+    end
+
+    subgraph Supabase["☁️ Supabase Edge Function"]
+        Webhook["sms-webhook"]
+        Router["Account Router"]
+    end
+
+    subgraph External["🌐 External APIs"]
+        Gemini["🤖 Gemini AI"]
+        YNAB["💰 YNAB API"]
+    end
+
+    SMS -->|"Contains ZMW"| Shortcut
+    Shortcut -->|"POST JSON"| Webhook
+    Webhook -->|"Parse SMS"| Gemini
+    Gemini -->|"Transaction details"| Webhook
+    Webhook --> Router
+    Router -->|"Create transaction"| YNAB
+
+    style Phone fill:#1a1a2e,stroke:#16213e,color:#fff
+    style Supabase fill:#1a1a2e,stroke:#16213e,color:#fff
+    style External fill:#1a1a2e,stroke:#16213e,color:#fff
+```
+
+### Flow breakdown
+
+| Step | Component | Action |
+|------|-----------|--------|
+| 1 | **iPhone** | Receives SMS from bank/mobile money |
+| 2 | **iOS Shortcut** | Triggers on "ZMW" keyword, sends to webhook |
+| 3 | **Edge Function** | Validates request, fetches YNAB categories/payees |
+| 4 | **Gemini AI** | Parses SMS, extracts amount/direction/payee/category |
+| 5 | **Router** | Maps SMS sender to correct YNAB account |
+| 6 | **YNAB API** | Creates transaction (+ fee transactions if applicable) |
 
 ## Why AI?
 
@@ -145,45 +179,41 @@ See [iOS Setup](#ios-setup) below.
 
 ## iOS Setup
 
+This project uses an iOS Shortcut Automation to capture SMS messages and send them to Supabase.
+
 ### Step 1: Create the Shortcut Automation
 
 1. Open the **Shortcuts** app
 2. Go to the **Automation** tab
 3. Tap **New Automation** → **Message**
-4. Set the filter to **"Message Contains: ZMW"**
-5. Enable **Run Immediately**
-6. Tap **Next** → **Create New Shortcut**
+4. Configure the trigger:
+   - **Sender**: Any Sender
+   - **Message Contains**: `ZMW`
+   - **Run Immediately**: ✓ (checked)
 
-### Step 2: Add the HTTP action
+<p align="center">
+  <img src="img/step_1.png" alt="iOS Shortcut trigger configuration" width="300">
+</p>
 
-1. Search for **"URL"** and select it
-2. Enter your Supabase function URL:
-   ```
-   https://<your-project-ref>.supabase.co/functions/v1/sms-webhook
-   ```
-3. Search for **"Get Contents of URL"** and select it
+### Step 2: Configure the HTTP request
 
-### Step 3: Configure the HTTP request
+1. Search for **"URL"** and add your Supabase function URL
+2. Search for **"Get Contents of URL"** and configure:
+   - **Method**: POST
+   - **Headers**:
+     - `Content-Type`: `application/json`
+     - `x-webhook-secret`: `<your-webhook-secret>`
+   - **Request Body**: JSON with 4 fields:
+     - `source`: `ios_shortcuts_sms`
+     - `sender`: **Shortcut Input** → **Sender**
+     - `receivedAt`: **Current Date**
+     - `text`: **Shortcut Input** → **Content**
 
-1. Tap **Show More** on the "Get Contents of URL" action
-2. Change **Method** to **POST**
-3. Add headers:
-   - `Content-Type`: `application/json`
-   - `x-webhook-secret`: `<your-webhook-secret>`
+<p align="center">
+  <img src="img/step_2.png" alt="iOS Shortcut HTTP request configuration" width="300">
+</p>
 
-### Step 4: Build the JSON body
-
-1. Under **Request Body**, set it to **JSON**
-2. Add these 4 keys:
-
-| Key | Type | Value |
-|-----|------|-------|
-| `source` | Text | `ios_shortcuts_sms` |
-| `sender` | Text | **Shortcut Input** → **Sender** |
-| `receivedAt` | Text | **Current Date** |
-| `text` | Text | **Shortcut Input** → **Content** |
-
-### Step 5: Done!
+### Step 3: Done!
 
 Tap **Done** — the automation is now active.
 
@@ -302,20 +332,7 @@ same_network: {
 | `ACCOUNT_ENDINGS` | JSON mapping of account endings → account names | No |
 | `FEE_CATEGORY_NAME` | YNAB category name for fee transactions | No |
 
-## Gemini free tier
 
-All Gemini models have **free tiers** — more than enough for personal use!
-
-| Model | Description |
-|-------|-------------|
-| `gemini-2.0-flash` | Fast, stable (default) |
-| `gemini-2.5-flash` | Hybrid reasoning |
-| `gemini-2.5-pro` | Most capable |
-
-To change models, edit `gemini.ts`:
-```typescript
-const GEMINI_MODEL = "gemini-2.5-flash";
-```
 
 ## License
 
