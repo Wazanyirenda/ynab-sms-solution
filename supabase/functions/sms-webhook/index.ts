@@ -163,10 +163,12 @@ async function processWithYnab(params: {
   const payees = getAllPayeeNames();
 
   // Parse SMS with Gemini AI
+  // Pass sender so AI can determine same_network vs cross_network transfers
   const geminiResult = await parseWithGemini(text, geminiApiKey, {
     categories,
     payees,
     receivedAt: receivedAtIso,
+    sender,
   });
 
   if (!geminiResult.success || !geminiResult.parsed) {

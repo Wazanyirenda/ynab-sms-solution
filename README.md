@@ -268,6 +268,7 @@ When an SMS arrives, it's sent to Gemini with your YNAB data:
 
 1. **Your YNAB categories** — AI picks the best match or leaves blank
 2. **Your YNAB payees** — AI fuzzy-matches or leaves blank
+3. **SMS sender** — AI uses this to determine `same_network` vs `cross_network` transfers
 
 The AI analyzes the SMS and returns:
 

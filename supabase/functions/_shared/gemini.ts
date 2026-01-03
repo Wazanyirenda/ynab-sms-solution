@@ -42,10 +42,12 @@ export interface AiContext {
     categories: string[];
     payees: string[];
     receivedAt?: string;
+    sender?: string; // SMS sender name (e.g., "AirtelMoney", "MoMo", "Absa")
 }
 
 // Gemini API config
-const GEMINI_MODEL = "gemini-2.0-flash";
+// Available models: gemini-2.0-flash, gemini-2.5-flash, gemini-3-flash
+const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_API_URL =
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
@@ -71,9 +73,16 @@ function buildPrompt(smsText: string, context: AiContext): string {
         }
     }
 
+    // Determine the sender type for transfer_type detection
+    // (helps AI know if transfer is same_network or cross_network)
+    const senderInfo = context.sender
+        ? `\nSMS SENDER: ${context.sender} (use this to determine same_network vs cross_network)`
+        : "";
+
     return `You are a financial SMS parser for Zambian banks and mobile money services.
 
 TASK: Analyze this SMS and extract transaction details.
+${senderInfo}
 
 USER'S YNAB CATEGORIES:
 ${categoryList}
@@ -119,27 +128,40 @@ RULES:
    - Look for patterns like "TID:", "Ref:", "Txn ID:"
    - Return ONLY the ID part, not the label
 
-8. transfer_type: Determine the type for fee calculation:
-   - "same_network" = Same provider (Airtel→Airtel, MTN→MTN)
-   - "cross_network" = Different mobile money (Airtel→MTN)
+8. transfer_type: CRITICAL — Determine the transfer type for fee calculation:
+   - "same_network" = Same provider (Airtel→Airtel, MTN→MTN, Zamtel→Zamtel)
+   - "cross_network" = Different mobile money (Airtel→MTN, MTN→Airtel, etc.)
    - "to_bank" = Mobile money → Bank account
    - "to_mobile" = Bank → Mobile money
    - "withdrawal" = Cash withdrawal at agent or ATM
    - "airtime" = Airtime or data purchase
-   - "bill_payment" = Utility bills, merchants
+   - "bill_payment" = Utility bills, merchants, till payments
    - "pos" = Point of sale / debit card purchase (look for "POS" in SMS)
-   - "unknown" = Can't determine
+   - "unknown" = ONLY use if truly cannot determine
 
-   ZAMBIAN PHONE PREFIXES:
-   - Airtel: 097, 077, 97, 77
-   - MTN: 096, 076, 96, 76
-   - Zamtel: 095, 075, 95, 75
+   ZAMBIAN MOBILE PHONE PREFIXES (may appear with or without leading 0):
+   - Airtel: 097x, 077x, 97x, 77x (e.g., 0971234567, 971234567, 0772345678)
+   - MTN: 096x, 076x, 96x, 76x (e.g., 0961234567, 961234567)
+   - Zamtel: 095x, 075x, 95x, 75x (e.g., 0951234567, 951234567)
+
+   HOW TO DETERMINE transfer_type:
+   1. Look for a phone number in the SMS (the recipient's number)
+   2. Check the FIRST 2-3 DIGITS to identify the network:
+      - 97, 77, 097, 077 → Airtel
+      - 96, 76, 096, 076 → MTN
+      - 95, 75, 095, 075 → Zamtel
+   3. Compare recipient network to SMS sender:
+      - If sender is "AirtelMoney" and recipient is 97x/77x → "same_network"
+      - If sender is "AirtelMoney" and recipient is 96x/76x → "cross_network"
+      - If sender is "MoMo" and recipient is 96x/76x → "same_network"
+      - If sender is "MoMo" and recipient is 97x/77x → "cross_network"
 
    DETECTION HINTS:
-   - "POS" → pos
-   - "ATM" or "withdraw" → withdrawal
-   - "top-up" → airtime
-   - "till" → bill_payment
+   - "POS" in SMS → pos
+   - "ATM" or "withdraw" or "agent" → withdrawal
+   - "top-up" or "airtime" or "data" → airtime
+   - "till" or "merchant" → bill_payment
+   - Bank account number (not phone) → to_bank
 
 SMS MESSAGE:
 """
