@@ -346,9 +346,9 @@ The system automatically creates separate fee transactions for mobile money tran
 | Airtel | Same network | ✅ Configured |
 | Airtel | Cross-network, to-bank | Placeholder |
 | MTN | Same network | Placeholder |
-| ABSA | To mobile money | ✅ K10 flat fee |
-| ABSA | ATM withdrawal | ✅ K20 flat fee |
-| ABSA | SMS notification | ✅ K0.50 per SMS |
+| Absa Bank | To mobile money | ✅ K10 flat fee |
+| Absa Bank | ATM withdrawal | ✅ K20 flat fee |
+| Absa Bank | SMS notification | ✅ K0.50 per SMS |
 
 > **Note:** ABSA fees vary by account type. The defaults are for Ultimate Plus accounts. Edit `fee-calculator.ts` for your account type.
 

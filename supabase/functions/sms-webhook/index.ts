@@ -323,7 +323,7 @@ async function processWithYnab(params: {
       const placeholderCategoryId = FEE_CATEGORY_NAME
         ? getCategoryIdByName(FEE_CATEGORY_NAME)
         : undefined;
-      const absaPayeeId = getPayeeIdByName("Absa");
+      const absaPayeeId = getPayeeIdByName("Absa Bank");
       const placeholderFeeImportId = importId.replace(/^sms:/, "plt:");
 
       const placeholderFeeTransaction: Record<string, unknown> = {
@@ -347,7 +347,7 @@ async function processWithYnab(params: {
         );
         feeInfo = {
           amount: 10,
-          payee: "Absa",
+          payee: "Absa Bank",
           transaction_id: placeholderRes.data.transaction_ids?.[0],
           transfer_type: "placeholder",
         };

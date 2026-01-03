@@ -129,17 +129,17 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
         // ABSA BANK (Ultimate Plus Account - adjust for your account type)
         absa: {
             to_mobile: {
-                payee: "Absa",
+                payee: "Absa Bank",
                 category: FEE_CATEGORY_NAME,
                 tiers: [{ min: 0, max: 1000000, fee: 10.0 }],
             },
             withdrawal: {
-                payee: "Absa",
+                payee: "Absa Bank",
                 category: FEE_CATEGORY_NAME,
                 tiers: [{ min: 0, max: 1000000, fee: 20.0 }],
             },
             bill_payment: {
-                payee: "Absa",
+                payee: "Absa Bank",
                 category: FEE_CATEGORY_NAME,
                 tiers: [],
             },
@@ -160,7 +160,7 @@ interface SmsNotificationFee {
 }
 
 const SMS_NOTIFICATION_FEES: Partial<Record<Provider, SmsNotificationFee>> = {
-    absa: { fee: 0.5, payee: "Absa", category: FEE_CATEGORY_NAME },
+    absa: { fee: 0.5, payee: "Absa Bank", category: FEE_CATEGORY_NAME },
 };
 
 /**
