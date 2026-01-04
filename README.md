@@ -344,12 +344,26 @@ The system automatically creates separate fee transactions for mobile money tran
 
 | Provider | Transfer Type | Status |
 |----------|--------------|--------|
-| Airtel | Same network | ✅ Configured |
+| Airtel | Same network | ✅ Configured (Jan 2025 rates) |
 | Airtel | Cross-network, to-bank | Placeholder |
 | MTN | Same network | Placeholder |
 | Absa Bank | To mobile money | ✅ K10 flat fee |
 | Absa Bank | ATM withdrawal | ✅ K20 flat fee |
 | Absa Bank | SMS notification | ✅ K0.50 per SMS |
+
+### Airtel Money fees (January 2025)
+
+Updated due to **Mobile Money Transaction Levy Act 2024** (effective Jan 1, 2025):
+
+| Amount (ZMW) | Fee (ZMW) |
+|--------------|-----------|
+| 0 - 150 | K0.74 |
+| 151 - 300 | K1.30 |
+| 301 - 500 | K1.60 |
+| 501 - 1,000 | K3.00 |
+| 1,001 - 3,000 | K6.00 |
+| 3,001 - 5,000 | K10.50 |
+| 5,001 - 10,000 | K12.00 |
 
 > **Note:** ABSA fees vary by account type. The defaults are for Ultimate Plus accounts. Edit `fee-calculator.ts` for your account type.
 

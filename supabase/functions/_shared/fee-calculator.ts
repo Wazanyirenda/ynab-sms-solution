@@ -4,11 +4,12 @@
  * Fees vary by provider and transfer type. Configure your fee schedules below.
  *
  * Fee data sources:
- * - https://liquify-zambia.com/help/mobile_money_charges.html
  * - https://077.airtel.co.zm/assets/pdf/AIRTEL-Tariff-Guide-Poster-A1.pdf
  * - https://www.absa.co.zm/personal/ultimate-plus-account/
  *
- * Note: Fees change over time. Verify against your actual transactions.
+ * Last updated: January 2025
+ * Note: Airtel fees increased due to Mobile Money Transaction Levy Act 2024
+ *       (effective Jan 1, 2025). Fees verified via actual transactions.
  */
 
 // Fee category from environment variable
@@ -58,19 +59,20 @@ export interface FeeResult {
 // Fee schedules by provider and transfer type
 const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
     {
-        // AIRTEL MONEY
+        // AIRTEL MONEY — Updated January 2025 (Mobile Money Levy Act 2024)
+        // Fees verified via actual transactions
         airtel: {
             same_network: {
                 payee: "Airtel",
                 category: FEE_CATEGORY_NAME,
                 tiers: [
-                    { min: 0, max: 150, fee: 0.58 },
-                    { min: 150, max: 300, fee: 1.1 },
-                    { min: 300, max: 500, fee: 1.2 },
-                    { min: 500, max: 1000, fee: 2.0 },
-                    { min: 1000, max: 3000, fee: 3.6 },
-                    { min: 3000, max: 5000, fee: 5.0 },
-                    { min: 5000, max: 10000, fee: 7.0 },
+                    { min: 0, max: 150, fee: 0.74 }, // Was 0.58
+                    { min: 150, max: 300, fee: 1.3 }, // Was 1.10
+                    { min: 300, max: 500, fee: 1.6 }, // Was 1.20
+                    { min: 500, max: 1000, fee: 3.0 }, // Was 2.00
+                    { min: 1000, max: 3000, fee: 6.0 }, // Was 3.60
+                    { min: 3000, max: 5000, fee: 10.5 }, // Was 5.00
+                    { min: 5000, max: 10000, fee: 12.0 }, // Was 7.00
                 ],
             },
             cross_network: {
