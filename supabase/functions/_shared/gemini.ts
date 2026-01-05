@@ -157,11 +157,18 @@ RULES:
       - If sender is "MoMo" and recipient is 97x/77x → "cross_network"
 
    DETECTION HINTS:
-   - "POS" in SMS → pos
+   - "POS" or "at POS" in SMS → pos
    - "ATM" or "withdraw" or "agent" → withdrawal
+   - "Debit Card transaction" → withdrawal (this is Absa ATM)
    - "top-up" or "airtime" or "data" → airtime
    - "till" or "merchant" → bill_payment
    - Bank account number (not phone) → to_bank
+
+   ABSA BANK SMS PATTERNS:
+   - "at POS" → pos (point of sale purchase)
+   - "Debit Card transaction" → withdrawal (ATM cash withdrawal, K20 fee)
+   - "has been credited" → inflow (money received)
+   - "has been debited" → outflow (transfer to mobile money or other)
 
 SMS MESSAGE:
 """

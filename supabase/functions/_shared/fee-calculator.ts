@@ -98,7 +98,9 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             bill_payment: {
                 payee: "Airtel",
                 category: FEE_CATEGORY_NAME,
-                tiers: [],
+                // Flat fee for bill/till payments (e.g., NHIMA health insurance)
+                // Verified: K120 payment → K1.20 fee
+                tiers: [{ min: 0, max: 1000000, fee: 1.2 }],
             },
         },
 
@@ -138,7 +140,14 @@ const FEE_CONFIG: Record<Provider, Partial<Record<TransferType, FeeSchedule>>> =
             withdrawal: {
                 payee: "Absa Bank",
                 category: FEE_CATEGORY_NAME,
+                // ATM withdrawal fee — detected via "Debit Card transaction" SMS
                 tiers: [{ min: 0, max: 1000000, fee: 20.0 }],
+            },
+            pos: {
+                payee: "Absa Bank",
+                category: FEE_CATEGORY_NAME,
+                // POS purchases — detected via "at POS" SMS, typically no fee
+                tiers: [],
             },
             bill_payment: {
                 payee: "Absa Bank",

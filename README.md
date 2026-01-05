@@ -345,10 +345,12 @@ The system automatically creates separate fee transactions for mobile money tran
 | Provider | Transfer Type | Status |
 |----------|--------------|--------|
 | Airtel | Same network | ✅ Configured (Jan 2025 rates) |
+| Airtel | Bill/Till payment | ✅ K1.20 flat fee (e.g., NHIMA) |
 | Airtel | Cross-network, to-bank | Placeholder |
 | MTN | Same network | Placeholder |
 | Absa Bank | To mobile money | ✅ K10 flat fee |
-| Absa Bank | ATM withdrawal | ✅ K20 flat fee |
+| Absa Bank | ATM withdrawal | ✅ K20 flat fee (detected via "Debit Card transaction") |
+| Absa Bank | POS purchase | ✅ No fee (detected via "at POS") |
 | Absa Bank | SMS notification | ✅ K0.50 per SMS |
 
 ### Airtel Money fees (January 2025)
@@ -364,6 +366,29 @@ Updated due to **Mobile Money Transaction Levy Act 2024** (effective Jan 1, 2025
 | 1,001 - 3,000 | K6.00 |
 | 3,001 - 5,000 | K10.50 |
 | 5,001 - 10,000 | K12.00 |
+
+### Absa SMS detection patterns
+
+| SMS Pattern | Detected As | Fee |
+|-------------|-------------|-----|
+| `"at POS"` | POS purchase | K0 |
+| `"Debit Card transaction"` | ATM withdrawal | K20 |
+| `"has been credited"` | Inflow | — |
+| `"has been debited"` | Outflow (to mobile) | K10 |
+
+### ATM withdrawals as transfers
+
+ATM withdrawals are automatically recorded as **transfers to your Cash account** in YNAB (not regular outflows). This correctly reflects that the money moved from your bank to your wallet.
+
+```
+Absa Current  →  Transfer  →  Cash
+     -K500          ↔          +K500
+```
+
+Configure the Cash account name (if different from "Cash"):
+```bash
+supabase secrets set CASH_ACCOUNT_NAME="My Cash Wallet"
+```
 
 > **Note:** ABSA fees vary by account type. The defaults are for Ultimate Plus accounts. Edit `fee-calculator.ts` for your account type.
 
@@ -399,6 +424,7 @@ same_network: {
 | `GEMINI_API_KEY` | Google Gemini API key | Yes |
 | `ACCOUNT_ENDINGS` | JSON mapping of account endings → account names | No |
 | `FEE_CATEGORY_NAME` | YNAB category name for fee transactions | No |
+| `CASH_ACCOUNT_NAME` | YNAB account for ATM withdrawals (default: "Cash") | No |
 
 
 

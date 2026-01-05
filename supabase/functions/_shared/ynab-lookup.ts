@@ -89,6 +89,17 @@ export function getAccountIdByName(name: string): string | undefined {
   return findAccountByName(name)?.id;
 }
 
+/**
+ * Gets the transfer payee ID for an account by name.
+ * Use this to create transfers between accounts in YNAB.
+ * Setting payee_id to this value makes the transaction a transfer.
+ */
+export function getTransferPayeeIdByAccountName(
+  name: string,
+): string | undefined {
+  return findAccountByName(name)?.transfer_payee_id;
+}
+
 export function getAllAccounts(): YnabAccount[] {
   return cache?.accounts.filter((a) => !a.deleted) ?? [];
 }

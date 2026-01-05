@@ -14,6 +14,7 @@ import {
   getAllPayeeNames,
   getCategoryIdByName,
   getPayeeIdByName,
+  getTransferPayeeIdByAccountName,
 } from "../_shared/ynab-lookup.ts";
 import { makeImportId, normalizeDate } from "../_shared/parsers.ts";
 import { resolveAccountId } from "../_shared/routing.ts";
@@ -36,6 +37,9 @@ const ynabBudgetId = Deno.env.get("YNAB_BUDGET_ID");
 const webhookSecret = Deno.env.get("WEBHOOK_SECRET");
 const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
 
+// Cash account name for ATM withdrawal transfers (defaults to "Cash")
+const cashAccountName = Deno.env.get("CASH_ACCOUNT_NAME") || "Cash";
+
 const ynabEnabled = Boolean(ynabToken && ynabBudgetId);
 const geminiEnabled = Boolean(geminiApiKey);
 
@@ -54,6 +58,7 @@ interface YnabResult {
   reason?: string;
   detail?: string;
   account?: string;
+  transfer_to?: string; // If ATM withdrawal, shows the Cash account name
   category?: string;
   payee?: string;
   payee_matched?: boolean;
@@ -218,14 +223,35 @@ async function processWithYnab(params: {
     return { sent: false, reason: "No account resolved", ai_parsed: aiParsed };
   }
 
-  // Look up category and payee IDs
-  const categoryId = aiParsed.category
-    ? getCategoryIdByName(aiParsed.category)
-    : undefined;
+  // Check if this is an ATM withdrawal — should be recorded as transfer to Cash
+  const isAtmWithdrawal = aiParsed.transfer_type === "withdrawal";
+
+  // For ATM withdrawals, get the Cash account's transfer payee ID
+  // This makes the transaction a transfer instead of a regular outflow
+  let transferPayeeId: string | undefined;
+  if (isAtmWithdrawal) {
+    transferPayeeId = getTransferPayeeIdByAccountName(cashAccountName);
+    if (!transferPayeeId) {
+      console.warn(
+        `Cash account "${cashAccountName}" not found — ATM withdrawal will be regular outflow`,
+      );
+    }
+  }
+
+  // Look up category and payee IDs (skip for transfers)
+  const categoryId =
+    aiParsed.category && !transferPayeeId
+      ? getCategoryIdByName(aiParsed.category)
+      : undefined;
 
   let payeeId: string | undefined;
   let payeeMatched = false;
-  if (aiParsed.payee) {
+  if (transferPayeeId) {
+    // ATM withdrawal: use transfer payee (creates transfer to Cash account)
+    payeeId = transferPayeeId;
+    payeeMatched = true;
+  } else if (aiParsed.payee) {
+    // Regular transaction: look up payee by name
     payeeId = getPayeeIdByName(aiParsed.payee);
     payeeMatched = !!payeeId;
   }
@@ -254,7 +280,8 @@ async function processWithYnab(params: {
   };
 
   if (payeeId) transaction.payee_id = payeeId;
-  if (categoryId) transaction.category_id = categoryId;
+  // Don't set category for transfers (YNAB doesn't allow it)
+  if (categoryId && !transferPayeeId) transaction.category_id = categoryId;
 
   // Send to YNAB
   try {
@@ -403,8 +430,12 @@ async function processWithYnab(params: {
     return {
       sent: true,
       account: routing.accountName,
+      // If ATM withdrawal, show that it's a transfer to Cash account
+      transfer_to: transferPayeeId ? cashAccountName : undefined,
       category: aiParsed.category ?? undefined,
-      payee: payeeMatched ? (aiParsed.payee ?? undefined) : undefined,
+      payee: payeeMatched && !transferPayeeId
+        ? (aiParsed.payee ?? undefined)
+        : undefined,
       payee_matched: payeeMatched,
       payee_extracted: aiParsed.payee ?? undefined,
       memo,
