@@ -239,10 +239,9 @@ async function processWithYnab(params: {
   }
 
   // Look up category and payee IDs (skip for transfers)
-  const categoryId =
-    aiParsed.category && !transferPayeeId
-      ? getCategoryIdByName(aiParsed.category)
-      : undefined;
+  const categoryId = aiParsed.category && !transferPayeeId
+    ? getCategoryIdByName(aiParsed.category)
+    : undefined;
 
   let payeeId: string | undefined;
   let payeeMatched = false;
@@ -404,7 +403,7 @@ async function processWithYnab(params: {
         account_id: routing.accountId,
         date: receivedAtIso.slice(0, 10),
         amount: -toMilliunits(smsNotificationFee.fee),
-        memo: `SMS Notification Fee: Ref: ${refId}`,
+        memo: "SMS Notification Fee",
         cleared: "cleared",
         approved: false,
         import_id: smsFeeImportId,

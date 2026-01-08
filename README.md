@@ -277,9 +277,19 @@ The AI analyzes the SMS and returns:
 | Is transaction? | Understands context (ignores promos) |
 | Amount | Extracts transaction amount, not balance |
 | Direction | Inflow (received) or outflow (sent/paid) |
-| Payee | Fuzzy-matches existing payees |
+| Payee | Fuzzy-matches existing payees + applies aliases |
 | Category | Matches your exact YNAB categories |
 | Memo | Clean memo with time, ref IDs, balance |
+
+### Payee aliases
+
+Some merchant names in SMS are mapped to cleaner payee names:
+
+| SMS Merchant | YNAB Payee |
+|--------------|------------|
+| PNZ Lusaka Securities ATM | LuSE |
+
+To add more aliases, edit the `PAYEE ALIASES` section in `gemini.ts`.
 
 **Note:** Payees are NEVER created automatically. If there's no match, the payee field stays blank.
 

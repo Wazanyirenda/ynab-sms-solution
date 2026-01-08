@@ -111,6 +111,9 @@ RULES:
    - If NOT MATCHED: set payee to the FULL name you extracted, is_new_payee = true
    - If NO payee mentioned: payee = null, is_new_payee = false
 
+   PAYEE ALIASES (always use the mapped name):
+   - "PNZ Lusaka Securities" or "PNZ Lusaka Securities ATM" → "LuSE"
+
 5. category:
    - MUST exactly match one of the categories listed above (case-insensitive OK)
    - If unsure, set to null
@@ -158,17 +161,27 @@ RULES:
 
    DETECTION HINTS:
    - "POS" or "at POS" in SMS → pos
-   - "ATM" or "withdraw" or "agent" → withdrawal
    - "Debit Card transaction" → withdrawal (this is Absa ATM)
    - "top-up" or "airtime" or "data" → airtime
    - "till" or "merchant" → bill_payment
    - Bank account number (not phone) → to_bank
+
+   ATM WITHDRAWAL DETECTION (be careful!):
+   - ONLY mark as "withdrawal" if it's clearly a CASH withdrawal from ATM machine
+   - "ATM withdrawal" or "withdrawn at ATM" or "cash withdrawal" → withdrawal
+   - BUT: "withdrawn through [Company Name]" is a PURCHASE, not cash withdrawal
+   - If "ATM" appears as part of a company/merchant name (e.g., "Lusaka Securities ATM"), it's NOT a cash withdrawal
+   - Stock purchases, broker transactions, securities = pos or bill_payment, NOT withdrawal
 
    ABSA BANK SMS PATTERNS:
    - "at POS" → pos (point of sale purchase)
    - "Debit Card transaction" → withdrawal (ATM cash withdrawal, K20 fee)
    - "has been credited" → inflow (money received)
    - "has been debited" → outflow (transfer to mobile money or other)
+
+   STANDARD CHARTERED SMS PATTERNS:
+   - "withdrawn from Acc... through [Company]" → purchase/payment at merchant (pos or bill_payment)
+   - This is NOT a cash withdrawal even if company name contains "ATM"
 
 SMS MESSAGE:
 """
