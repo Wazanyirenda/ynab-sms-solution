@@ -46,8 +46,9 @@ export interface AiContext {
 }
 
 // Gemini API config
-// Available models: gemini-2.0-flash, gemini-2.5-flash, gemini-3-flash-preview
-const GEMINI_MODEL = "gemini-3-flash-preview";
+// Available models: gemini-2.0-flash, gemini-2.5-flash
+// Note: gemini-3-flash-preview had JSON parsing issues
+const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_API_URL =
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
