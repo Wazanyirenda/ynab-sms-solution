@@ -79,6 +79,12 @@ interface YnabResult {
     payee: string | null;
     transaction_id?: string;
   };
+  reconciliation?: {
+    sms_balance: number;
+    ynab_balance: number;
+    difference: number;
+    adjustment_id?: string;
+  };
   ai_parsed?: GeminiParsedSms;
   ai_raw?: string;
 }
@@ -426,6 +432,65 @@ async function processWithYnab(params: {
       }
     }
 
+    // Auto-reconciliation for ABSA transactions
+    // Compares SMS balance to YNAB balance and creates adjustment if different
+    let reconciliationInfo: YnabResult["reconciliation"];
+    if (provider === "absa" && aiParsed.balance !== null && routing.accountId) {
+      try {
+        // Get current YNAB account balance (in milliunits)
+        const accountRes = await client.getAccount(routing.accountId);
+        const ynabBalanceMilli = accountRes.data.account.cleared_balance;
+        const ynabBalance = ynabBalanceMilli / 1000;
+
+        // SMS balance from AI parsing
+        const smsBalance = aiParsed.balance;
+
+        // Calculate difference (YNAB - SMS)
+        // Positive = YNAB has more than SMS (need outflow adjustment)
+        // Negative = YNAB has less than SMS (need inflow adjustment)
+        const difference = Math.round((ynabBalance - smsBalance) * 100) / 100;
+
+        // Only create adjustment if difference is more than K0.01
+        if (Math.abs(difference) > 0.01) {
+          const adjustmentImportId = importId.replace(/^sms:/, "adj:");
+          const adjustmentAmount = -toMilliunits(difference); // Negative to correct
+
+          const adjustmentTransaction: Record<string, unknown> = {
+            account_id: routing.accountId,
+            date: receivedAtIso.slice(0, 10),
+            amount: adjustmentAmount,
+            memo: `Auto-reconciliation: SMS bal ${smsBalance}, YNAB bal ${
+              ynabBalance.toFixed(2)
+            }`,
+            payee_name: "Unknown Adjustment",
+            cleared: "cleared",
+            approved: false,
+            import_id: adjustmentImportId,
+          };
+
+          const adjustmentRes = await client.createTransaction(
+            adjustmentTransaction as any,
+          );
+
+          reconciliationInfo = {
+            sms_balance: smsBalance,
+            ynab_balance: ynabBalance,
+            difference,
+            adjustment_id: adjustmentRes.data.transaction_ids?.[0],
+          };
+
+          console.log("RECONCILIATION:", {
+            sms_balance: smsBalance,
+            ynab_balance: ynabBalance,
+            difference,
+            adjustment: adjustmentAmount / 1000,
+          });
+        }
+      } catch (reconcileErr) {
+        console.error("Failed to reconcile:", reconcileErr);
+      }
+    }
+
     return {
       sent: true,
       account: routing.accountName,
@@ -444,6 +509,7 @@ async function processWithYnab(params: {
       duplicate_import_ids: res.data.duplicate_import_ids,
       fee: feeInfo,
       sms_fee: smsFeeInfo,
+      reconciliation: reconciliationInfo,
       ai_parsed: aiParsed,
       ai_raw: geminiResult.raw_response,
     };

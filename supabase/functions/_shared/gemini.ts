@@ -18,6 +18,7 @@ export interface GeminiParsedSms {
     category: string | null;
     memo: string | null;
     transaction_ref: string | null;
+    balance: number | null; // Remaining balance after transaction (for reconciliation)
     transfer_type:
         | "same_network"
         | "cross_network"
@@ -122,7 +123,7 @@ RULES:
    - Transfers between accounts → category = null
    - Only categorize when CONFIDENT about the purchase type
 
-6. memo: Format as "[Action] [Payee] | [HH:MM] | Ref: [ID] | Bal: [Balance]"
+6. memo: Format as "[Action] [Payee] | [HH:MM] | Bal: [Balance]"
    - Use the FULL payee name (do NOT abbreviate)
    - ALWAYS include transaction TIME (HH:MM format)
    - Look for time in SMS first, if not found use: ${fallbackTime}
@@ -132,7 +133,12 @@ RULES:
    - Look for patterns like "TID:", "Ref:", "Txn ID:"
    - Return ONLY the ID part, not the label
 
-8. transfer_type: CRITICAL — Determine the transfer type for fee calculation:
+8. balance: Extract the REMAINING BALANCE after the transaction
+   - Look for "bal", "balance", "available balance", "your bal is"
+   - Return as a NUMBER (e.g., 5161.02), not string
+   - If no balance found, return null
+
+9. transfer_type: CRITICAL — Determine the transfer type for fee calculation:
    - "same_network" = Same provider (Airtel→Airtel, MTN→MTN, Zamtel→Zamtel)
    - "cross_network" = Different mobile money (Airtel→MTN, MTN→Airtel, etc.)
    - "to_bank" = Mobile money → Bank account
@@ -202,6 +208,7 @@ Respond with JSON only:
   "category": "exact category name from list" or null,
   "memo": "clean description" or null,
   "transaction_ref": "reference ID" or null,
+  "balance": number or null,
   "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "pos" | "unknown" or null
 }`;
 }

@@ -109,5 +109,22 @@ export function createYnabClient({ token, budgetId }: YnabClientOptions) {
         }),
       });
     },
+
+    // Get a single account by ID (includes current balance)
+    getAccount: (accountId: string, explicitBudgetId?: string) => {
+      const id = explicitBudgetId ?? budgetId;
+      if (!id) throw new Error("budgetId required");
+      return ynabFetch<{
+        data: {
+          account: {
+            id: string;
+            name: string;
+            balance: number; // In milliunits
+            cleared_balance: number;
+            uncleared_balance: number;
+          };
+        };
+      }>(`/budgets/${id}/accounts/${accountId}`);
+    },
   };
 }

@@ -436,6 +436,35 @@ same_network: {
 | `FEE_CATEGORY_NAME` | YNAB category name for fee transactions | No |
 | `CASH_ACCOUNT_NAME` | YNAB account for ATM withdrawals (default: "Cash") | No |
 
+## Auto-Reconciliation (ABSA)
+
+ABSA transactions often have small balance discrepancies due to hidden fees, missed SMS notifications, or timing issues. The system automatically reconciles these differences.
+
+### How it works
+
+After each ABSA transaction:
+1. **Extract balance** from SMS (e.g., "Your available balance is 5,161.02")
+2. **Query YNAB** for the account's current cleared balance
+3. **Compare** — if difference > K0.01, create an adjustment transaction
+
+### Example
+
+```
+SMS balance:  K5,161.02
+YNAB balance: K5,106.34
+Difference:   K54.68
+
+→ Creates: +K54.68 "Unknown Adjustment" transaction
+```
+
+### Adjustment transactions
+
+- **Payee**: "Unknown Adjustment"
+- **Memo**: "Auto-reconciliation: SMS bal 5161.02, YNAB bal 5106.34"
+- **Approved**: No (requires your review)
+
+Review these transactions periodically to identify patterns (e.g., recurring fees you weren't aware of).
+
 
 
 ## License
