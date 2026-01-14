@@ -1,13 +1,35 @@
 /**
- * GEMINI AI CLIENT — Parse SMS messages using Google's Gemini LLM.
+ * GEMINI AI CLIENT — Hybrid SMS parsing (Code + AI)
  *
- * Uses AI to intelligently parse SMS messages and extract transaction details.
- * Matches against your actual YNAB categories and payees for accurate categorization.
+ * ARCHITECTURE:
+ * 1. CODE: Pre-extract deterministic data (amount, balance, time, phone, etc.)
+ * 2. AI: Understand context (is_transaction, payee, direction, category)
+ * 3. CODE: Post-process (apply aliases, format memo, override with extractions)
  *
- * Free tier: 15 requests/minute, 1 million tokens/day (more than enough for personal use)
+ * This hybrid approach improves accuracy, speed, and reduces token costs.
  */
 
-// The structured response from Gemini
+import {
+    detectTransferType,
+    extractAmount,
+    extractBalance,
+    extractPhoneAndNetwork,
+    extractTime,
+    extractTransactionRef,
+    formatMemo,
+    type MobileNetwork,
+    preExtract,
+    type PreExtractedData,
+    type TransferType,
+} from "./extractors.ts";
+import { applyPayeeAlias } from "./payee-aliases.ts";
+import { senderToProvider } from "./fee-calculator.ts";
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+// The structured response (final output after post-processing)
 export interface GeminiParsedSms {
     is_transaction: boolean;
     reason: string;
@@ -18,18 +40,8 @@ export interface GeminiParsedSms {
     category: string | null;
     memo: string | null;
     transaction_ref: string | null;
-    balance: number | null; // Remaining balance after transaction (for reconciliation)
-    transfer_type:
-        | "same_network"
-        | "cross_network"
-        | "to_bank"
-        | "to_mobile"
-        | "withdrawal"
-        | "airtime"
-        | "bill_payment"
-        | "pos"
-        | "unknown"
-        | null;
+    balance: number | null;
+    transfer_type: TransferType | null;
 }
 
 export interface GeminiResult {
@@ -37,35 +49,117 @@ export interface GeminiResult {
     parsed?: GeminiParsedSms;
     error?: string;
     raw_response?: string;
+    // Debug info for the hybrid extraction
+    pre_extracted?: PreExtractedData;
 }
 
 export interface AiContext {
     categories: string[];
     payees: string[];
     receivedAt?: string;
-    sender?: string; // SMS sender name (e.g., "AirtelMoney", "MoMo", "Absa")
+    sender?: string;
 }
 
-// Gemini API config
+// What AI returns (before post-processing)
+interface AiResponse {
+    is_transaction: boolean;
+    reason: string;
+    direction: "inflow" | "outflow" | null;
+    payee: string | null;
+    is_new_payee: boolean;
+    category: string | null;
+    action: string; // For memo: "Sent", "Received", "Purchased", etc.
+}
+
+// ============================================================================
+// CONFIG
+// ============================================================================
+
 // Available models: gemini-2.0-flash, gemini-2.5-flash
-// Note: gemini-3-flash-preview had JSON parsing issues
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_API_URL =
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
+// ============================================================================
+// SIMPLIFIED AI PROMPT
+// ============================================================================
+
 /**
- * Builds the prompt for Gemini with user's YNAB data.
+ * Builds a simplified prompt for AI.
+ * Only asks AI to do what it's good at: understanding context.
+ * Deterministic data (amount, balance, time) is extracted in code.
  */
 function buildPrompt(smsText: string, context: AiContext): string {
     const categoryList = context.categories.slice(0, 100).join(", ");
     const payeeList = context.payees.slice(0, 200).join(", ");
 
-    // Convert receivedAt to Zambia timezone (CAT = UTC+2)
-    let fallbackTime = "";
+    return `You are a financial SMS parser. Analyze this SMS and determine:
+1. Is this a real transaction? (not promo, OTP, balance check, loan offer)
+2. What direction is the money flow? (inflow or outflow)
+3. Who is the payee? (person or business name, if mentioned)
+4. What category fits? (from the user's list)
+
+USER'S YNAB CATEGORIES:
+${categoryList}
+
+USER'S EXISTING YNAB PAYEES:
+${payeeList}
+
+RULES:
+- is_transaction: TRUE for real money movements, FALSE for promos/OTPs/balance checks
+- direction: "inflow" (received/credited) or "outflow" (sent/paid/purchased)
+- payee: Extract FULL name if explicitly mentioned, otherwise null
+- category: Must EXACTLY match one from the list above, or null if unsure
+- action: Short verb for memo (e.g., "Sent", "Received", "Purchased", "Withdrawn", "Paid")
+
+CHECK EXISTING PAYEES:
+- If payee matches an existing one (fuzzy OK), use EXACT name from list, is_new_payee = false
+- If payee is new, set is_new_payee = true
+- If no payee mentioned, payee = null, is_new_payee = false
+
+SMS:
+"""
+${smsText}
+"""
+
+Respond with JSON only:
+{
+  "is_transaction": true/false,
+  "reason": "brief explanation",
+  "direction": "inflow" or "outflow" or null,
+  "payee": "name" or null,
+  "is_new_payee": true/false,
+  "category": "exact category name" or null,
+  "action": "Sent" or "Received" or "Purchased" etc.
+}`;
+}
+
+// ============================================================================
+// MAIN FUNCTION
+// ============================================================================
+
+/**
+ * Parses an SMS using hybrid approach (Code + AI).
+ *
+ * 1. Pre-extract deterministic data in code (amount, balance, time, etc.)
+ * 2. Send simplified prompt to AI for context understanding
+ * 3. Post-process: merge code extractions + AI response + aliases
+ */
+export async function parseWithGemini(
+    smsText: string,
+    apiKey: string,
+    context: AiContext,
+): Promise<GeminiResult> {
+    // -------------------------------------------------------------------------
+    // STEP 1: Pre-extract deterministic data in code
+    // -------------------------------------------------------------------------
+
+    // Calculate fallback time from receivedAt
+    let fallbackTime = "00:00";
     if (context.receivedAt) {
         try {
             const date = new Date(context.receivedAt);
-            const zambiaOffset = 2 * 60 * 60 * 1000;
+            const zambiaOffset = 2 * 60 * 60 * 1000; // UTC+2
             const localDate = new Date(date.getTime() + zambiaOffset);
             const hours = String(localDate.getUTCHours()).padStart(2, "0");
             const minutes = String(localDate.getUTCMinutes()).padStart(2, "0");
@@ -75,162 +169,31 @@ function buildPrompt(smsText: string, context: AiContext): string {
         }
     }
 
-    // Determine the sender type for transfer_type detection
-    // (helps AI know if transfer is same_network or cross_network)
-    const senderInfo = context.sender
-        ? `\nSMS SENDER: ${context.sender} (use this to determine same_network vs cross_network)`
-        : "";
+    // Determine sender network for transfer type detection
+    const senderNetwork: MobileNetwork = context.sender
+        ? (senderToProvider(context.sender) as MobileNetwork)
+        : "unknown";
 
-    return `You are a financial SMS parser for Zambian banks and mobile money services.
+    // Pre-extract all deterministic data
+    const preExtracted = preExtract(smsText, senderNetwork, fallbackTime);
 
-TASK: Analyze this SMS and extract transaction details.
-${senderInfo}
+    // -------------------------------------------------------------------------
+    // STEP 2: Call AI for context understanding
+    // -------------------------------------------------------------------------
 
-USER'S YNAB CATEGORIES:
-${categoryList}
-
-USER'S EXISTING YNAB PAYEES:
-${payeeList}
-
-RULES:
-
-1. is_transaction:
-   - TRUE only for real money movements (sent, received, paid, withdrawn, deposited, credited, debited, purchased, top-up)
-   - FALSE for: balance checks, promotions, OTPs, conversations, loan offers
-
-2. amount: Extract the TRANSACTION amount, NOT the remaining balance
-
-3. direction:
-   - "inflow" = money received, deposited, credited, refunded
-   - "outflow" = money sent, paid, withdrawn, purchased, debited
-
-4. payee:
-   - Extract the FULL person/business name ONLY if EXPLICITLY mentioned in the SMS
-   - Do NOT guess or infer a payee — if not named, set payee to null
-   - Do NOT abbreviate names
-   - Check if it matches an existing payee from the list (fuzzy match OK)
-   - If MATCHED: set payee to the EXACT name from the payee list, is_new_payee = false
-   - If NOT MATCHED: set payee to the FULL name you extracted, is_new_payee = true
-   - If NO payee mentioned: payee = null, is_new_payee = false
-
-   PAYEE ALIASES (always use the mapped name):
-   - "PNZ Lusaka Securities" or "PNZ Lusaka Securities ATM" → "LuSE"
-
-5. category:
-   - MUST exactly match one of the categories listed above (case-insensitive OK)
-   - If unsure, set to null
-   - Generic bank debits/credits → category = null
-   - Transfers between accounts → category = null
-   - Only categorize when CONFIDENT about the purchase type
-
-6. memo: Format as "[Action] [Payee] | [HH:MM] | Bal: [Balance]"
-   - Use the FULL payee name (do NOT abbreviate)
-   - ALWAYS include transaction TIME (HH:MM format)
-   - Look for time in SMS first, if not found use: ${fallbackTime}
-   - Do NOT include dates, only TIME
-
-7. transaction_ref: Extract the transaction/reference ID if present
-   - Look for patterns like "TID:", "Ref:", "Txn ID:"
-   - Return ONLY the ID part, not the label
-
-8. balance: Extract the REMAINING BALANCE after the transaction
-   - Look for "bal", "balance", "available balance", "your bal is"
-   - Return as a NUMBER (e.g., 5161.02), not string
-   - If no balance found, return null
-
-9. transfer_type: CRITICAL — Determine the transfer type for fee calculation:
-   - "same_network" = Same provider (Airtel→Airtel, MTN→MTN, Zamtel→Zamtel)
-   - "cross_network" = Different mobile money (Airtel→MTN, MTN→Airtel, etc.)
-   - "to_bank" = Mobile money → Bank account
-   - "to_mobile" = Bank → Mobile money
-   - "withdrawal" = Cash withdrawal at agent or ATM
-   - "airtime" = Airtime or data purchase
-   - "bill_payment" = Utility bills, merchants, till payments
-   - "pos" = Point of sale / debit card purchase (look for "POS" in SMS)
-   - "unknown" = ONLY use if truly cannot determine
-
-   ZAMBIAN MOBILE PHONE PREFIXES (may appear with or without leading 0):
-   - Airtel: 097x, 077x, 97x, 77x (e.g., 0971234567, 971234567, 0772345678)
-   - MTN: 096x, 076x, 96x, 76x (e.g., 0961234567, 961234567)
-   - Zamtel: 095x, 075x, 95x, 75x (e.g., 0951234567, 951234567)
-
-   HOW TO DETERMINE transfer_type:
-   1. Look for a phone number in the SMS (the recipient's number)
-   2. Check the FIRST 2-3 DIGITS to identify the network:
-      - 97, 77, 097, 077 → Airtel
-      - 96, 76, 096, 076 → MTN
-      - 95, 75, 095, 075 → Zamtel
-   3. Compare recipient network to SMS sender:
-      - If sender is "AirtelMoney" and recipient is 97x/77x → "same_network"
-      - If sender is "AirtelMoney" and recipient is 96x/76x → "cross_network"
-      - If sender is "MoMo" and recipient is 96x/76x → "same_network"
-      - If sender is "MoMo" and recipient is 97x/77x → "cross_network"
-
-   DETECTION HINTS:
-   - "POS" or "at POS" in SMS → pos
-   - "Debit Card transaction" → withdrawal (this is Absa ATM)
-   - "top-up" or "airtime" or "data" → airtime
-   - "till" or "merchant" → bill_payment
-   - Bank account number (not phone) → to_bank
-
-   ATM WITHDRAWAL DETECTION (be careful!):
-   - ONLY mark as "withdrawal" if it's clearly a CASH withdrawal from ATM machine
-   - "ATM withdrawal" or "withdrawn at ATM" or "cash withdrawal" → withdrawal
-   - BUT: "withdrawn through [Company Name]" is a PURCHASE, not cash withdrawal
-   - If "ATM" appears as part of a company/merchant name (e.g., "Lusaka Securities ATM"), it's NOT a cash withdrawal
-   - Stock purchases, broker transactions, securities = pos or bill_payment, NOT withdrawal
-
-   ABSA BANK SMS PATTERNS:
-   - "at POS" → pos (point of sale purchase)
-   - "Debit Card transaction" → withdrawal (ATM cash withdrawal, K20 fee)
-   - "has been credited" → inflow (money received)
-   - "has been debited" → outflow (transfer to mobile money or other)
-
-   STANDARD CHARTERED SMS PATTERNS:
-   - "withdrawn from Acc... through [Company]" → purchase/payment at merchant (pos or bill_payment)
-   - This is NOT a cash withdrawal even if company name contains "ATM"
-
-SMS MESSAGE:
-"""
-${smsText}
-"""
-
-FALLBACK TIME (use if no time in SMS): ${fallbackTime}
-
-Respond with JSON only:
-{
-  "is_transaction": true/false,
-  "reason": "brief explanation",
-  "amount": number or null,
-  "direction": "inflow" or "outflow" or null,
-  "payee": "matched or new payee name" or null,
-  "is_new_payee": true/false,
-  "category": "exact category name from list" or null,
-  "memo": "clean description" or null,
-  "transaction_ref": "reference ID" or null,
-  "balance": number or null,
-  "transfer_type": "same_network" | "cross_network" | "to_bank" | "to_mobile" | "withdrawal" | "airtime" | "bill_payment" | "pos" | "unknown" or null
-}`;
-}
-
-/**
- * Parses an SMS message using Gemini AI.
- */
-export async function parseWithGemini(
-    smsText: string,
-    apiKey: string,
-    context: AiContext,
-): Promise<GeminiResult> {
     const requestBody = {
         contents: [{ parts: [{ text: buildPrompt(smsText, context) }] }],
         generationConfig: {
             temperature: 0.1,
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 2048,
+            maxOutputTokens: 1024, // Allow more output tokens
             responseMimeType: "application/json",
         },
     };
+
+    let aiResponse: AiResponse;
+    let rawResponse: string | undefined;
 
     try {
         const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
@@ -246,6 +209,7 @@ export async function parseWithGemini(
                 error:
                     `Gemini API error: ${response.status} ${response.statusText}`,
                 raw_response: errorText,
+                pre_extracted: preExtracted,
             };
         }
 
@@ -258,8 +222,11 @@ export async function parseWithGemini(
                 success: false,
                 error: "No text content in Gemini response",
                 raw_response: JSON.stringify(geminiResponse),
+                pre_extracted: preExtracted,
             };
         }
+
+        rawResponse = textContent;
 
         // Clean markdown code blocks if present
         const cleanedJson = textContent
@@ -268,35 +235,96 @@ export async function parseWithGemini(
             .trim();
 
         try {
-            const parsed: GeminiParsedSms = JSON.parse(cleanedJson);
-
-            if (typeof parsed.is_transaction !== "boolean") {
-                return {
-                    success: false,
-                    error: "Invalid response: missing is_transaction field",
-                    raw_response: textContent,
-                };
-            }
-
-            if (parsed.is_new_payee === undefined) {
-                parsed.is_new_payee = true;
-            }
-
-            return { success: true, parsed, raw_response: textContent };
-        } catch (parseError) {
+            aiResponse = JSON.parse(cleanedJson);
+        } catch (parseErr) {
+            // JSON parsing failed - return error with raw response for debugging
             return {
                 success: false,
-                error: `Failed to parse Gemini JSON: ${parseError}`,
+                error: `Failed to parse AI response: ${parseErr}`,
                 raw_response: textContent,
+                pre_extracted: preExtracted,
             };
         }
-    } catch (fetchError) {
+
+        if (typeof aiResponse.is_transaction !== "boolean") {
+            return {
+                success: false,
+                error: "Invalid response: missing is_transaction field",
+                raw_response: textContent,
+                pre_extracted: preExtracted,
+            };
+        }
+    } catch (err) {
         return {
             success: false,
-            error: `Network error calling Gemini: ${fetchError}`,
+            error: `Gemini network error: ${err}`,
+            raw_response: rawResponse,
+            pre_extracted: preExtracted,
         };
     }
+
+    // -------------------------------------------------------------------------
+    // STEP 3: Post-process — merge code extractions + AI response
+    // -------------------------------------------------------------------------
+
+    // Apply payee alias if exists
+    const finalPayee = applyPayeeAlias(aiResponse.payee);
+
+    // Check if aliased payee matches existing YNAB payee
+    let isNewPayee = aiResponse.is_new_payee;
+    if (finalPayee && finalPayee !== aiResponse.payee) {
+        // Alias was applied - check if it's in payee list
+        const payeeLower = finalPayee.toLowerCase();
+        const existsInYnab = context.payees.some(
+            (p) => p.toLowerCase() === payeeLower,
+        );
+        isNewPayee = !existsInYnab;
+    }
+
+    // Use code-extracted transfer type if available, otherwise default to unknown
+    const finalTransferType = preExtracted.transferType ?? "unknown";
+
+    // Format memo in code (consistent formatting)
+    const memo = formatMemo(
+        aiResponse.action || "Transaction",
+        finalPayee,
+        preExtracted.time,
+        preExtracted.balance,
+    );
+
+    // Build final result with code extractions taking priority for deterministic fields
+    const parsed: GeminiParsedSms = {
+        // From AI (context understanding)
+        is_transaction: aiResponse.is_transaction,
+        reason: aiResponse.reason,
+        direction: aiResponse.direction,
+        category: aiResponse.category,
+
+        // From AI + post-processing (payee alias applied)
+        payee: finalPayee,
+        is_new_payee: isNewPayee,
+
+        // From CODE (deterministic extraction - more reliable)
+        amount: preExtracted.amount,
+        balance: preExtracted.balance,
+        transaction_ref: preExtracted.transactionRef,
+        transfer_type: finalTransferType,
+
+        // From CODE (formatted consistently)
+        memo,
+    };
+
+    return {
+        success: true,
+        parsed,
+        raw_response: rawResponse,
+        pre_extracted: preExtracted,
+    };
 }
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
 
 /**
  * Converts an amount to YNAB milliunits (1000 = ZMW 1.00).

@@ -2,7 +2,7 @@
 
 Automatically captures transaction SMS messages from Zambian banks and mobile money services, then imports them into YNAB (You Need A Budget).
 
-**Powered by Google Gemini AI** for intelligent SMS parsing — no brittle regex rules!
+**Powered by a Hybrid Architecture** — deterministic code extraction + Gemini AI for context understanding.
 
 ## System Architecture
 
@@ -46,20 +46,38 @@ flowchart TD
 | 5 | **Router** | Maps SMS sender to correct YNAB account |
 | 6 | **YNAB API** | Creates transaction (+ fee transactions if applicable) |
 
-## Why AI?
+## Hybrid Architecture
 
-Traditional regex-based parsing has problems:
+This system uses a **Code + AI hybrid approach** for maximum accuracy:
 
-- ❌ Too strict → misses valid transactions with unusual formats
-- ❌ Too loose → imports spam/promos that mention amounts
-- ❌ Breaks when banks change message formats
+### CODE handles deterministic data (fast, reliable, 100% accurate)
+- 💰 **Amount extraction** — regex patterns for "ZMW 100.00", "K1,234.56"
+- 💵 **Balance extraction** — "Your bal is", "available balance is"
+- ⏰ **Time extraction** — "14:30", "as at 09/01/2026 01:40"
+- 📱 **Phone/network detection** — Zambian prefixes (97=Airtel, 96=MTN, 95=Zamtel)
+- 🏷️ **Transfer type** — "at POS" → pos, "Debit Card transaction" → withdrawal
+- 🔗 **Payee aliases** — "PNZ Lusaka Securities ATM" → "LuSE"
 
-Gemini AI understands **context**:
+### AI handles contextual understanding (smart, flexible)
+- ❓ **Is this a transaction?** — distinguishes real transactions from promos/OTPs
+- ↔️ **Direction** — inflow (received) vs outflow (sent/paid)
+- 👤 **Payee matching** — fuzzy-matches to existing YNAB payees
+- 🏷️ **Category suggestion** — matches against your YNAB categories
+- 📝 **Action verb** — "Sent", "Received", "Purchased" for memo
 
-- ✅ Knows promotional messages aren't real transactions
-- ✅ Handles various message formats automatically
-- ✅ Extracts payee names and suggests categories
-- ✅ Adapts to new formats without code changes
+### Why hybrid?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Pure AI** | Flexible | Slow, expensive, can hallucinate numbers |
+| **Pure regex** | Fast, precise | Brittle, breaks on format changes |
+| **Hybrid** ✅ | Best of both! | More code to maintain |
+
+The hybrid approach ensures:
+- ✅ **Numbers are always correct** — code extraction, not AI guessing
+- ✅ **Context is understood** — AI determines if it's a real transaction
+- ✅ **Faster responses** — smaller AI prompts, less work for AI
+- ✅ **Lower costs** — fewer tokens = cheaper API calls
 
 ## Features
 
@@ -95,7 +113,9 @@ supabase/
 │   │   ├── index.ts          # Main webhook handler
 │   │   └── deno.json         # Deno config
 │   └── _shared/
-│       ├── gemini.ts         # 🤖 Gemini AI client
+│       ├── extractors.ts     # 📊 Code-based data extraction (amount, balance, time, phone)
+│       ├── payee-aliases.ts  # 🏷️ Merchant name → YNAB payee mapping
+│       ├── gemini.ts         # 🤖 Hybrid AI client (code + AI)
 │       ├── fee-calculator.ts # 💸 Transaction fee calculation
 │       ├── config.ts         # ⚙️ Sender→account mappings
 │       ├── parsers.ts        # Utility functions
@@ -262,34 +282,62 @@ Some banks include "account ending XXXX" in SMS. Configure via Supabase secrets:
 supabase secrets set ACCOUNT_ENDINGS='{"1234":"Savings","5678":"Current"}'
 ```
 
-## How AI parsing works
+## How parsing works
 
-When an SMS arrives, it's sent to Gemini with your YNAB data:
+When an SMS arrives, parsing happens in **3 stages**:
 
-1. **Your YNAB categories** — AI picks the best match or leaves blank
-2. **Your YNAB payees** — AI fuzzy-matches or leaves blank
-3. **SMS sender** — AI uses this to determine `same_network` vs `cross_network` transfers
+### Stage 1: Code extraction (deterministic)
 
-The AI analyzes the SMS and returns:
+Before calling AI, code extracts reliable data:
 
-| Field | How AI handles it |
+```typescript
+// extractors.ts does this automatically:
+{
+  amount: 1020,              // From "ZMW 1020.00"
+  balance: 2824.97,          // From "Your bal is ZMW 2824.97"
+  time: "13:22",             // From timestamp or fallback
+  transactionRef: "PP260103.1323.C60482",  // From "TID:"
+  transferType: "same_network",  // From phone prefix (97 = Airtel)
+}
+```
+
+### Stage 2: AI analysis (contextual)
+
+AI receives a simplified prompt asking only for context:
+
+| Field | What AI determines |
 |-------|-------------------|
-| Is transaction? | Understands context (ignores promos) |
-| Amount | Extracts transaction amount, not balance |
-| Direction | Inflow (received) or outflow (sent/paid) |
-| Payee | Fuzzy-matches existing payees + applies aliases |
-| Category | Matches your exact YNAB categories |
-| Memo | Clean memo with time, ref IDs, balance |
+| Is transaction? | Real money movement or promo/OTP? |
+| Direction | Inflow (received) or outflow (sent)? |
+| Payee | Who is the person/business? |
+| Category | Best match from your YNAB categories |
+| Action | Verb for memo ("Sent", "Purchased", etc.) |
+
+### Stage 3: Post-processing (code)
+
+Code merges AI response with extractions:
+
+1. **Override numbers** — code-extracted amount/balance always wins
+2. **Apply aliases** — "PNZ Lusaka Securities ATM" → "LuSE"
+3. **Format memo** — "[Action] [Payee] | [HH:MM] | Bal: [Balance]"
 
 ### Payee aliases
 
-Some merchant names in SMS are mapped to cleaner payee names:
+Edit `payee-aliases.ts` to map merchant names:
+
+```typescript
+// payee-aliases.ts
+const PAYEE_ALIASES: Record<string, string> = {
+  "pnz lusaka securities": "LuSE",
+  "pnz lusaka securities atm": "LuSE",
+  // Add more aliases here
+};
+```
 
 | SMS Merchant | YNAB Payee |
 |--------------|------------|
 | PNZ Lusaka Securities ATM | LuSE |
-
-To add more aliases, edit the `PAYEE ALIASES` section in `gemini.ts`.
+| PNZ Lusaka Securities | LuSE |
 
 **Note:** Payees are NEVER created automatically. If there's no match, the payee field stays blank.
 
