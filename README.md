@@ -409,7 +409,7 @@ The system automatically creates separate fee transactions for mobile money tran
 | Absa Bank | To mobile money | ✅ K10 flat fee |
 | Absa Bank | ATM withdrawal | ✅ K20 flat fee (detected via "Debit Card transaction") |
 | Absa Bank | POS purchase | ✅ No fee (detected via "at POS") |
-| Absa Bank | SMS notification | ✅ K0.50 per SMS |
+| Absa Bank | SMS notification | ✅ K0.50 per SMS (detected via reconciliation) |
 
 ### Airtel Money fees (January 2025)
 
@@ -486,35 +486,48 @@ same_network: {
 
 ## Auto-Reconciliation (ABSA)
 
-ABSA transactions often have small balance discrepancies due to hidden fees, missed SMS notifications, or timing issues. The system automatically reconciles these differences.
+ABSA transactions often have small balance discrepancies due to delayed SMS notification fees. The system automatically reconciles these differences.
+
+### Why delayed fee detection?
+
+ABSA charges K0.50 per SMS notification, but these fees often post **later** (sometimes hours after the transaction). If we add the fee immediately, YNAB won't match the actual bank balance until the fee posts.
+
+**Solution:** Don't add fees upfront. Instead, detect them during reconciliation when the bank has actually charged them.
 
 ### How it works
 
 After each ABSA transaction:
 1. **Extract balance** from SMS (e.g., "Your available balance is 5,161.02")
 2. **Query YNAB** for the account's current cleared balance
-3. **Subtract fees** we just created (SMS fee K0.50, transaction fees, etc.) from SMS balance
-4. **Compare** — if difference > K0.01, create an adjustment transaction
+3. **Calculate difference** between expected and actual
+4. **Smart fee detection**:
+   - If difference is a **multiple of K0.50** (K0.50, K1.00, K1.50, K2.00...) → treat as SMS fees
+   - Otherwise → treat as unknown adjustment
 
-> **Note:** The SMS balance is from *before* fees are charged. YNAB balance is *after* we created fee transactions. We account for this to avoid false adjustments.
-
-### Example
+### Example: Delayed SMS fees
 
 ```
 SMS balance:  K5,161.02
-YNAB balance: K5,106.34
-Difference:   K54.68
+YNAB balance: K5,159.52
+Difference:   K1.50 (3 × K0.50)
 
-→ Creates: +K54.68 "Unknown Adjustment" transaction
+→ Creates: -K1.50 "SMS Notification Fee (3x K0.50)"
+   Payee: Absa Bank
+   Category: Bank / Transaction Fees
 ```
 
-### Adjustment transactions
+### Example: Unknown adjustment
 
-- **Payee**: "Unknown Adjustment"
-- **Memo**: "Auto-reconciliation: SMS bal 5161.02, YNAB bal 5106.34"
-- **Approved**: No (requires your review)
+```
+SMS balance:  K5,161.02
+YNAB balance: K5,158.75
+Difference:   K2.27 (not a multiple of K0.50)
 
-Review these transactions periodically to identify patterns (e.g., recurring fees you weren't aware of).
+→ Creates: -K2.27 "Unknown Adjustment"
+   Payee: Unknown Adjustment
+```
+
+Review unknown adjustments periodically to identify patterns (e.g., recurring fees you weren't aware of).
 
 
 

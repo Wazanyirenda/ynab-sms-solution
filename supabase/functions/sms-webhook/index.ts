@@ -391,10 +391,18 @@ async function processWithYnab(params: {
     }
 
     // Create SMS notification fee if applicable
+    // NOTE: For ABSA, we skip automatic SMS fee creation because the fee may not
+    // have posted to the bank yet. Instead, reconciliation will detect the fee
+    // as a multiple of K0.50 and create it then.
     let smsFeeInfo: YnabResult["sms_fee"];
     const smsNotificationFee = getSmsNotificationFee(provider);
 
-    if (smsNotificationFee.fee && smsNotificationFee.fee > 0) {
+    // Only create SMS fee immediately for non-ABSA providers
+    if (
+      provider !== "absa" &&
+      smsNotificationFee.fee &&
+      smsNotificationFee.fee > 0
+    ) {
       const smsFeeCategoryId = smsNotificationFee.category
         ? getCategoryIdByName(smsNotificationFee.category)
         : undefined;
@@ -402,7 +410,6 @@ async function processWithYnab(params: {
         ? getPayeeIdByName(smsNotificationFee.payee)
         : undefined;
 
-      const refId = aiParsed.transaction_ref ?? importId;
       const smsFeeImportId = importId.replace(/^sms:/, "ntf:");
 
       const smsFeeTransaction: Record<string, unknown> = {
@@ -434,6 +441,7 @@ async function processWithYnab(params: {
 
     // Auto-reconciliation for ABSA transactions
     // Compares SMS balance to YNAB balance and creates adjustment if different
+    // SPECIAL: If difference is a multiple of K0.50, treat it as delayed SMS fees
     let reconciliationInfo: YnabResult["reconciliation"];
     if (provider === "absa" && aiParsed.balance !== null && routing.accountId) {
       try {
@@ -445,12 +453,8 @@ async function processWithYnab(params: {
         // SMS balance from AI parsing
         const smsBalance = aiParsed.balance;
 
-        // IMPORTANT: Account for fees we just created in YNAB
-        // The SMS balance is BEFORE fees were charged by the bank/system.
-        // But YNAB balance now INCLUDES the fees we just created.
-        // So we need to subtract our fees from SMS balance for fair comparison.
-        const ourFeesJustCreated =
-          (feeInfo?.amount ?? 0) + (smsFeeInfo?.amount ?? 0);
+        // Account for transaction fees we just created (NOT SMS fees for ABSA)
+        const ourFeesJustCreated = feeInfo?.amount ?? 0;
 
         // Expected YNAB balance = SMS balance - fees we created
         const expectedYnabBalance = smsBalance - ourFeesJustCreated;
@@ -465,19 +469,77 @@ async function processWithYnab(params: {
         if (Math.abs(difference) > 0.01) {
           const adjustmentImportId = importId.replace(/^sms:/, "adj:");
           const adjustmentAmount = -toMilliunits(difference); // Negative to correct
+          const absDifference = Math.abs(difference);
 
-          const adjustmentTransaction: Record<string, unknown> = {
-            account_id: routing.accountId,
-            date: receivedAtIso.slice(0, 10),
-            amount: adjustmentAmount,
-            memo: `Auto-reconciliation: SMS bal ${smsBalance}, YNAB bal ${ynabBalance.toFixed(
-              2,
-            )}, fees ${ourFeesJustCreated.toFixed(2)}`,
-            payee_name: "Unknown Adjustment",
-            cleared: "cleared",
-            approved: false,
-            import_id: adjustmentImportId,
-          };
+          // Check if difference is a multiple of K0.50 (delayed SMS fees)
+          // K0.50, K1.00, K1.50, K2.00, etc.
+          const isMultipleOfSmsFee =
+            Math.abs((absDifference % 0.5) - 0) < 0.01 ||
+            Math.abs((absDifference % 0.5) - 0.5) < 0.01;
+          const smsFeesCount = Math.round(absDifference / 0.5);
+
+          let adjustmentTransaction: Record<string, unknown>;
+
+          if (isMultipleOfSmsFee && smsFeesCount > 0 && smsFeesCount <= 20) {
+            // Treat as delayed SMS notification fees
+            const feeCategoryId = getCategoryIdByName(
+              "Bank / Transaction Fees",
+            );
+            const feePayeeId = getPayeeIdByName("Absa Bank");
+
+            adjustmentTransaction = {
+              account_id: routing.accountId,
+              date: receivedAtIso.slice(0, 10),
+              amount: adjustmentAmount,
+              memo: `SMS Notification Fee${
+                smsFeesCount > 1 ? ` (${smsFeesCount}x K0.50)` : ""
+              }`,
+              cleared: "cleared",
+              approved: false,
+              import_id: adjustmentImportId,
+            };
+
+            if (feePayeeId) adjustmentTransaction.payee_id = feePayeeId;
+            else adjustmentTransaction.payee_name = "Absa Bank";
+            if (feeCategoryId) {
+              adjustmentTransaction.category_id = feeCategoryId;
+            }
+
+            // Also set smsFeeInfo to indicate we created SMS fee via reconciliation
+            smsFeeInfo = {
+              amount: absDifference,
+              payee: "Absa Bank",
+            };
+
+            console.log("RECONCILIATION (SMS FEES):", {
+              sms_balance: smsBalance,
+              ynab_balance: ynabBalance,
+              difference,
+              sms_fees_count: smsFeesCount,
+              total_fee: absDifference,
+            });
+          } else {
+            // Unknown adjustment (not a multiple of K0.50)
+            adjustmentTransaction = {
+              account_id: routing.accountId,
+              date: receivedAtIso.slice(0, 10),
+              amount: adjustmentAmount,
+              memo: `Auto-reconciliation: SMS bal ${smsBalance}, YNAB bal ${
+                ynabBalance.toFixed(2)
+              }`,
+              payee_name: "Unknown Adjustment",
+              cleared: "cleared",
+              approved: false,
+              import_id: adjustmentImportId,
+            };
+
+            console.log("RECONCILIATION (UNKNOWN):", {
+              sms_balance: smsBalance,
+              ynab_balance: ynabBalance,
+              difference,
+              adjustment: adjustmentAmount / 1000,
+            });
+          }
 
           const adjustmentRes = await client.createTransaction(
             adjustmentTransaction as any,
@@ -489,15 +551,6 @@ async function processWithYnab(params: {
             difference,
             adjustment_id: adjustmentRes.data.transaction_ids?.[0],
           };
-
-          console.log("RECONCILIATION:", {
-            sms_balance: smsBalance,
-            ynab_balance: ynabBalance,
-            expected_ynab: expectedYnabBalance,
-            fees_created: ourFeesJustCreated,
-            difference,
-            adjustment: adjustmentAmount / 1000,
-          });
         }
       } catch (reconcileErr) {
         console.error("Failed to reconcile:", reconcileErr);
