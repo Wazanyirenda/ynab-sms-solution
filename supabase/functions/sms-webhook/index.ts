@@ -445,10 +445,21 @@ async function processWithYnab(params: {
         // SMS balance from AI parsing
         const smsBalance = aiParsed.balance;
 
-        // Calculate difference (YNAB - SMS)
-        // Positive = YNAB has more than SMS (need outflow adjustment)
-        // Negative = YNAB has less than SMS (need inflow adjustment)
-        const difference = Math.round((ynabBalance - smsBalance) * 100) / 100;
+        // IMPORTANT: Account for fees we just created in YNAB
+        // The SMS balance is BEFORE fees were charged by the bank/system.
+        // But YNAB balance now INCLUDES the fees we just created.
+        // So we need to subtract our fees from SMS balance for fair comparison.
+        const ourFeesJustCreated =
+          (feeInfo?.amount ?? 0) + (smsFeeInfo?.amount ?? 0);
+
+        // Expected YNAB balance = SMS balance - fees we created
+        const expectedYnabBalance = smsBalance - ourFeesJustCreated;
+
+        // Calculate difference (YNAB - Expected)
+        // Positive = YNAB has more than expected (need outflow adjustment)
+        // Negative = YNAB has less than expected (need inflow adjustment)
+        const difference =
+          Math.round((ynabBalance - expectedYnabBalance) * 100) / 100;
 
         // Only create adjustment if difference is more than K0.01
         if (Math.abs(difference) > 0.01) {
@@ -459,9 +470,9 @@ async function processWithYnab(params: {
             account_id: routing.accountId,
             date: receivedAtIso.slice(0, 10),
             amount: adjustmentAmount,
-            memo: `Auto-reconciliation: SMS bal ${smsBalance}, YNAB bal ${
-              ynabBalance.toFixed(2)
-            }`,
+            memo: `Auto-reconciliation: SMS bal ${smsBalance}, YNAB bal ${ynabBalance.toFixed(
+              2,
+            )}, fees ${ourFeesJustCreated.toFixed(2)}`,
             payee_name: "Unknown Adjustment",
             cleared: "cleared",
             approved: false,
@@ -482,6 +493,8 @@ async function processWithYnab(params: {
           console.log("RECONCILIATION:", {
             sms_balance: smsBalance,
             ynab_balance: ynabBalance,
+            expected_ynab: expectedYnabBalance,
+            fees_created: ourFeesJustCreated,
             difference,
             adjustment: adjustmentAmount / 1000,
           });

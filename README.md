@@ -493,7 +493,10 @@ ABSA transactions often have small balance discrepancies due to hidden fees, mis
 After each ABSA transaction:
 1. **Extract balance** from SMS (e.g., "Your available balance is 5,161.02")
 2. **Query YNAB** for the account's current cleared balance
-3. **Compare** — if difference > K0.01, create an adjustment transaction
+3. **Subtract fees** we just created (SMS fee K0.50, transaction fees, etc.) from SMS balance
+4. **Compare** — if difference > K0.01, create an adjustment transaction
+
+> **Note:** The SMS balance is from *before* fees are charged. YNAB balance is *after* we created fee transactions. We account for this to avoid false adjustments.
 
 ### Example
 
